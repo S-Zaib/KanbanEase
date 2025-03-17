@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply text-gray-800 bg-gray-50;
+}
+
+.task-card {
+  @apply bg-white rounded-md shadow-sm p-3 mb-2 cursor-pointer hover:shadow-md transition-shadow duration-200;
+}
+
+.list-column {
+  @apply bg-gray-100 rounded-md p-3 w-72 h-full;
+}
+
+.list-title {
+  @apply font-semibold text-gray-700 mb-2 px-2;
+}
+
+.board {
+  @apply flex gap-4 p-6 bg-board min-h-screen overflow-x-auto;
+}
