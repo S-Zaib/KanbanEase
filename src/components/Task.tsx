@@ -1,97 +1,68 @@
-import React, { useState } from 'react';
-import { Draggable } from '@hello-pangea/dnd';
-import { Task as TaskType } from '../lib/supabase';
-import { useBoardContext } from '../context/BoardContext';
+import { useState } from 'react'
+import { Database } from '../lib/supabase'
 
-interface TaskProps {
-  task: TaskType;
-  index: number;
+type TaskProps = {
+  task: Database['public']['Tables']['tasks']['Row']
+  onDelete: (taskId: string) => Promise<void>
+  onUpdate: (taskId: string, title: string) => Promise<void>
 }
 
-const Task: React.FC<TaskProps> = ({ task, index }) => {
-  const { updateTask, deleteTask } = useBoardContext();
-  const [isEditing, setIsEditing] = useState(false);
-  const [title, setTitle] = useState(task.title);
-  const [description, setDescription] = useState(task.description || '');
+export default function Task({ task, onDelete, onUpdate }: TaskProps) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [title, setTitle] = useState(task.title)
 
-  const handleSave = async () => {
-    await updateTask(task.id, { title, description });
-    setIsEditing(false);
-  };
-
-  const handleDelete = async () => {
-    if (window.confirm('Are you sure you want to delete this task?')) {
-      await deleteTask(task.id);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (title.trim() && title !== task.title) {
+      await onUpdate(task.id, title.trim())
     }
-  };
+    setIsEditing(false)
+  }
 
   return (
-    <Draggable draggableId={task.id} index={index}>
-      {(provided) => (
-        <div
-          ref={provided.innerRef}
-          {...provided.draggableProps}
-          {...provided.dragHandleProps}
-          className="task-card"
-        >
-          {isEditing ? (
-            <div className="space-y-2">
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full p-1 border border-gray-300 rounded"
-                autoFocus
-              />
-              <textarea
-                value={description || ''}
-                onChange={(e) => setDescription(e.target.value)}
-                className="w-full p-1 border border-gray-300 rounded min-h-[60px]"
-                placeholder="Description (optional)"
-              />
-              <div className="flex justify-end space-x-2">
-                <button
-                  onClick={() => setIsEditing(false)}
-                  className="px-2 py-1 text-sm text-gray-600 hover:text-gray-800"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  className="px-2 py-1 text-sm bg-primary-500 text-white rounded hover:bg-primary-600"
-                >
-                  Save
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div>
-              <div className="flex justify-between items-start">
-                <h3 className="font-medium">{task.title}</h3>
-                <div className="flex space-x-1">
-                  <button
-                    onClick={() => setIsEditing(true)}
-                    className="text-gray-500 hover:text-gray-700 text-sm px-1"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={handleDelete}
-                    className="text-gray-500 hover:text-red-600 text-sm px-1"
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-              {task.description && (
-                <p className="text-sm text-gray-600 mt-1">{task.description}</p>
-              )}
-            </div>
-          )}
+    <div className="bg-white p-3 rounded shadow-sm">
+      {isEditing ? (
+        <form onSubmit={handleSubmit} className="flex gap-2">
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="flex-1 p-1 border rounded"
+            autoFocus
+          />
+          <button
+            type="submit"
+            className="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600"
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsEditing(false)}
+            className="px-2 py-1 bg-gray-500 text-white rounded hover:bg-gray-600"
+          >
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <div className="flex justify-between items-start">
+          <div
+            className="flex-1 cursor-pointer"
+            onClick={() => setIsEditing(true)}
+          >
+            <h3 className="text-sm">{task.title}</h3>
+            {task.description && (
+              <p className="text-xs text-gray-500 mt-1">{task.description}</p>
+            )}
+          </div>
+          <button
+            onClick={() => onDelete(task.id)}
+            className="text-red-500 hover:text-red-700"
+          >
+            ×
+          </button>
         </div>
       )}
-    </Draggable>
-  );
-};
-
-export default Task;
+    </div>
+  )
+}
