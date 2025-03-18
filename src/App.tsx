@@ -3,6 +3,7 @@ import { Session } from '@supabase/supabase-js'
 import { supabase } from './lib/supabase'
 import Board from './components/Board'
 import Auth from './components/Auth'
+import Logo from './components/Logo'
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -27,8 +28,11 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-xl text-gray-600">Loading...</div>
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-[#0d1117] to-[#161b22]">
+        <div className="flex flex-col items-center gap-4">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+          <div className="text-xl text-gray-200">Loading your boards...</div>
+        </div>
       </div>
     )
   }
@@ -38,24 +42,24 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-900">KanbanEase</h1>
+    <div className="min-h-screen bg-gradient-to-br from-[#0d1117] to-[#161b22]">
+      <header className="sticky top-0 z-10 bg-[#161b22]/90 backdrop-blur-md border-b border-[#30363d] shadow-lg">
+        <div className="w-full px-4 py-3 flex justify-between items-center">
+          <Logo size="small" />
           <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600">
+            <span className="text-sm text-gray-300">
               {session.user.email}
             </span>
             <button
               onClick={() => supabase.auth.signOut()}
-              className="px-3 py-2 text-sm font-medium text-white bg-gray-600 rounded hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+              className="px-3 py-1.5 text-sm bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:from-blue-700 hover:to-blue-800 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-md hover:shadow-lg"
             >
               Sign Out
             </button>
           </div>
         </div>
       </header>
-      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+      <main className="h-[calc(100vh-4rem)]">
         <Board userId={session.user.id} />
       </main>
     </div>
