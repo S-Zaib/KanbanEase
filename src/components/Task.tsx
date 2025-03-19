@@ -4,7 +4,7 @@ import { Database } from '../lib/supabase'
 type TaskProps = {
   task: Database['public']['Tables']['tasks']['Row']
   onDelete: (taskId: string) => Promise<void>
-  onUpdate: (taskId: string, title: string) => Promise<void>
+  onUpdate: (taskId: string, title: string, description: string) => Promise<void>
 }
 
 export default function Task({ task, onDelete, onUpdate }: TaskProps) {
@@ -12,6 +12,7 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
   const [title, setTitle] = useState(task.title)
+  const [description, setDescription] = useState(task.description || "") // New state for description
   const modalRef = useRef<HTMLDivElement>(null)
   const titleInputRef = useRef<HTMLTextAreaElement>(null)
 
@@ -53,7 +54,7 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
     }
   }, [isModalOpen])
 
-  // Focus the title input when editing in modal
+  // Focus the title input when editing
   useEffect(() => {
     if (isEditing && titleInputRef.current) {
       titleInputRef.current.focus()
@@ -62,8 +63,8 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (title.trim() && title !== task.title) {
-      await onUpdate(task.id, title.trim())
+    if ((title.trim() && title !== task.title) || (description.trim() !== task.description)) {
+      await onUpdate(task.id, title.trim(), description.trim())
     }
     setIsEditing(false)
   }
@@ -72,9 +73,9 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
     setIsModalOpen(false)
     setIsEditing(false)
     setTitle(task.title)
+    setDescription(task.description || "")
   }
 
-  // Task card component
   return (
     <>
       <div
@@ -83,13 +84,8 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
-        {/* Task created indicator */}
         <div className="absolute top-0 left-0 w-1 h-1 rounded-full bg-blue-500/50 m-1"></div>
-        
-        {/* Task content */}
         <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{task.title}</p>
-        
-        {/* Edit and delete buttons */}
         <div className={`absolute right-1 top-1 transition-opacity flex gap-1 ${isHovered ? 'opacity-100' : 'opacity-0'}`}>
           <button
             onClick={(e) => {
@@ -113,19 +109,14 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
             ×
           </button>
         </div>
-        
-        {/* Bottom bar for visual boundary */}
-        <div className="absolute bottom-0 left-1 right-1 h-0.5 bg-[#30363d]/50 rounded-full"></div>
       </div>
 
-      {/* Task Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center">
           <div 
             ref={modalRef}
             className="bg-[#161b22] rounded-lg shadow-2xl border border-[#30363d] w-full max-w-md mx-4 overflow-hidden relative"
           >
-            {/* Modal header */}
             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-purple-600"></div>
             <div className="flex justify-between items-center border-b border-[#30363d] p-4">
               <h3 className="text-lg font-semibold text-gray-100">Task Details</h3>
@@ -137,7 +128,6 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
               </button>
             </div>
 
-            {/* Modal content */}
             <div className="p-4">
               {isEditing ? (
                 <form onSubmit={handleSubmit}>
@@ -146,16 +136,18 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
                     ref={titleInputRef}
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
+                    className="w-full min-h-[3rem] p-3 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none resize-none shadow-inner mb-4"
+                  />
+                  <label className="block text-gray-400 text-sm mb-2">Description</label>
+                  <textarea
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
                     className="w-full min-h-[6rem] p-3 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none resize-none shadow-inner mb-4"
                   />
-                  <p className="text-xs text-gray-500 mb-4">Press Escape to cancel, Enter to submit</p>
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
-                      onClick={() => {
-                        setIsEditing(false)
-                        setTitle(task.title)
-                      }}
+                      onClick={closeModal}
                       className="px-3 py-1.5 text-sm bg-[#21262d] text-gray-300 rounded-md hover:bg-[#30363d] transition-colors"
                     >
                       Cancel
@@ -169,33 +161,12 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
                   </div>
                 </form>
               ) : (
-                <div>
-                  <div className="mb-4">
-                    <h4 className="text-gray-400 text-sm mb-2">Title</h4>
-                    <p className="text-gray-200 whitespace-pre-wrap break-words p-3 bg-[#0d1117] rounded-md border border-[#30363d]">{task.title}</p>
-                  </div>
-                  {/* Placeholder for future description */}
-                  {/* <div className="mb-4">
-                    <h4 className="text-gray-400 text-sm mb-2">Description</h4>
-                    <p className="text-gray-500 italic p-3 bg-[#0d1117] rounded-md border border-[#30363d]">
-                      No description provided
-                    </p>
-                  </div> */}
-                  <div className="flex justify-end gap-2 mt-6">
-                    <button
-                      onClick={() => setIsEditing(true)}
-                      className="px-3 py-1.5 text-sm bg-[#21262d] text-gray-300 rounded-md hover:bg-[#30363d] transition-colors"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      onClick={closeModal}
-                      className="px-3 py-1.5 text-sm bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:from-blue-700 hover:to-blue-800 transition-colors"
-                    >
-                      Close
-                    </button>
-                  </div>
-                </div>
+                <>
+                  <p className="text-gray-200">{task.description || "No description available."}</p>
+                  <button onClick={() => setIsEditing(true)} className="mt-4 px-3 py-1.5 text-sm bg-[#21262d] text-gray-300 rounded-md hover:bg-[#30363d] transition-colors">
+                    Edit
+                  </button>
+                </>
               )}
             </div>
           </div>
