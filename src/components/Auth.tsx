@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase'
 import Logo from './Logo'
 
 type AuthProps = {
-  onAuthenticated: () => void
+  onAuthenticated?: () => void
 }
 
 export default function Auth({ onAuthenticated }: AuthProps) {

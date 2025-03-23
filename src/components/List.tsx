@@ -3,15 +3,42 @@ import { useState } from 'react'
 import { Database } from '../lib/supabase'
 import Task from './Task'
 
-type ListProps = {
-  list: Database['public']['Tables']['lists']['Row']
-  tasks: Database['public']['Tables']['tasks']['Row'][]
-  onAddTask: (listId: string, title: string) => Promise<void>
-  onDeleteTask: (taskId: string) => Promise<void>
-  onUpdateTask: (taskId: string, title: string) => Promise<void>
+interface BoardMember {
+  id: string;
+  email: string;
+  role?: string;
 }
 
-export default function List({ list, tasks, onAddTask, onDeleteTask, onUpdateTask }: ListProps) {
+// Match the Task type from Board component
+type TaskRow = Database['public']['Tables']['tasks']['Row'] & {
+  description?: string | null;
+  due_date?: string;
+  assigned_to?: string;
+}
+
+type ListProps = {
+  list: Database['public']['Tables']['lists']['Row']
+  tasks: TaskRow[]
+  onAddTask: (listId: string, title: string) => Promise<void>
+  onDeleteTask: (taskId: string) => Promise<void>
+  onUpdateTask: (taskId: string, title: string, description?: string, due_date?: string, assigned_to?: string) => Promise<void>
+  onUpdateListTitle: (listId: string, title: string) => void
+  onDeleteList: (listId: string) => void
+  onMoveTask: (taskId: string, sourceListId: string, destinationListId: string) => Promise<void>
+  boardMembers?: BoardMember[]
+}
+
+export default function List({ 
+  list, 
+  tasks, 
+  onAddTask, 
+  onDeleteTask, 
+  onUpdateTask,
+  onUpdateListTitle,
+  onDeleteList,
+  onMoveTask,
+  boardMembers = [] 
+}: ListProps) {
   const [isAddingTask, setIsAddingTask] = useState(false)
   const [newTaskTitle, setNewTaskTitle] = useState('')
 
@@ -65,6 +92,7 @@ export default function List({ list, tasks, onAddTask, onDeleteTask, onUpdateTas
                       task={task}
                       onDelete={onDeleteTask}
                       onUpdate={onUpdateTask}
+                      boardMembers={boardMembers}
                     />
                   </div>
                 )}

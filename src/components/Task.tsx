@@ -1,97 +1,295 @@
-import { useState, useRef, useEffect } from "react";
-import { Database } from "../lib/supabase";
+import { useState, useRef, useEffect } from 'react'
+import { Database } from '../lib/supabase'
+import { supabase } from '../lib/supabase'
 
-type TaskProps = {
-  task: Database["public"]["Tables"]["tasks"]["Row"];
-  onDelete: (taskId: string) => Promise<void>;
-  onUpdate: (taskId: string, title: string, description: string, dueDate: string, comments: string[]) => Promise<void>;
+// Type for comments
+interface Comment {
+  id: string;
+  task_id: string;
+  user_id: string;
+  content: string;
+  created_at: string;
+  user_email?: string;
+}
+
+// Type for board members/users for assignment
+interface BoardMember {
+  id: string;
+  email: string;
+}
+
+// Enhanced type for Task with additional properties
+type EnhancedTask = Database['public']['Tables']['tasks']['Row'] & {
+  description?: string | null;
+  due_date?: string;
+  assigned_to?: string;
+  assignee_email?: string;
+  comments?: Comment[];
 };
 
-export default function Task({ task, onDelete, onUpdate }: TaskProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
-  const [title, setTitle] = useState(task.title);
-  const [description, setDescription] = useState(task.description || "");
-  const [dueDate, setDueDate] = useState(task.due_date || "");
-  const [comments, setComments] = useState<string[]>(task.comments || []); // New state for comments
-  const [newComment, setNewComment] = useState("");
-  const modalRef = useRef<HTMLDivElement>(null);
-  const titleInputRef = useRef<HTMLTextAreaElement>(null);
+type TaskProps = {
+  task: EnhancedTask;
+  boardMembers: BoardMember[];
+  onDelete: (taskId: string) => Promise<void>;
+  onUpdate: (
+    taskId: string, 
+    title: string, 
+    description?: string, 
+    due_date?: string, 
+    assigned_to?: string
+  ) => Promise<void>;
+}
 
+export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskProps) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isHovered, setIsHovered] = useState(false)
+  const [title, setTitle] = useState(task.title)
+  const [description, setDescription] = useState(task.description || '')
+  const [dueDate, setDueDate] = useState('')
+  const [dueTime, setDueTime] = useState('')
+  const [assignedTo, setAssignedTo] = useState(task.assigned_to || '')
+  const [comments, setComments] = useState<Comment[]>(task.comments || [])
+  const [newComment, setNewComment] = useState('')
+  const [loading, setLoading] = useState(false)
+  
+  const modalRef = useRef<HTMLDivElement>(null)
+  const titleInputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Initialize due date and time when component mounts or task changes
+  useEffect(() => {
+    if (task.due_date) {
+      const date = new Date(task.due_date)
+      setDueDate(formatDateForInput(date))
+      setDueTime(formatTimeForInput(date))
+    } else {
+      setDueDate('')
+      setDueTime('')
+    }
+  }, [task.due_date])
+
+  // Helper functions for date/time formatting
+  const formatDateForInput = (date: Date): string => {
+    return date.toISOString().split('T')[0]
+  }
+
+  const formatTimeForInput = (date: Date): string => {
+    return date.toISOString().split('T')[1].substring(0, 5)
+  }
+
+  const combineDateAndTime = (): string | undefined => {
+    if (!dueDate) return undefined
+    
+    if (dueTime) {
+      // Combine date and time to create ISO string
+      return `${dueDate}T${dueTime}:00`
+    }
+    
+    // Just use the date with default time (start of day)
+    return `${dueDate}T00:00:00`
+  }
+
+  // Fetch comments when modal opens
+  useEffect(() => {
+    if (isModalOpen) {
+      fetchComments();
+    }
+  }, [isModalOpen]);
+
+  // Close modal when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (modalRef.current && !modalRef.current.contains(event.target as Node)) {
-        closeModal();
+        closeModal()
       }
     }
 
     if (isModalOpen) {
-      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener('mousedown', handleClickOutside)
     } else {
-      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener('mousedown', handleClickOutside)
     }
 
     return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [isModalOpen]);
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [isModalOpen])
 
+  // Handle Escape key to close modal
   useEffect(() => {
     function handleEscapeKey(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        closeModal();
+      if (event.key === 'Escape') {
+        closeModal()
       }
     }
 
     if (isModalOpen) {
-      document.addEventListener("keydown", handleEscapeKey);
+      document.addEventListener('keydown', handleEscapeKey)
     } else {
-      document.removeEventListener("keydown", handleEscapeKey);
+      document.removeEventListener('keydown', handleEscapeKey)
     }
 
     return () => {
-      document.removeEventListener("keydown", handleEscapeKey);
-    };
-  }, [isModalOpen]);
+      document.removeEventListener('keydown', handleEscapeKey)
+    }
+  }, [isModalOpen])
 
+  // Focus the title input when editing in modal
   useEffect(() => {
     if (isEditing && titleInputRef.current) {
-      titleInputRef.current.focus();
+      titleInputRef.current.focus()
     }
-  }, [isEditing]);
+  }, [isEditing])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (
-      (title.trim() && title !== task.title) ||
-      (description.trim() !== task.description) ||
-      (dueDate !== task.due_date) ||
-      (comments !== task.comments)
-    ) {
-      await onUpdate(task.id, title.trim(), description.trim(), dueDate, comments);
+  const fetchComments = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('comments')
+        .select(`
+          *,
+          profiles:user_id (email)
+        `)
+        .eq('task_id', task.id)
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      
+      // Transform the data to match our Comment interface
+      const formattedComments = data?.map(comment => ({
+        ...comment,
+        user_email: comment.profiles?.email
+      })) || [];
+      
+      setComments(formattedComments);
+    } catch (error) {
+      console.error('Error fetching comments:', error);
+    } finally {
+      setLoading(false);
     }
-    setIsEditing(false);
   };
 
-  const handleAddComment = async () => {
-    if (newComment.trim() !== "") {
-      const updatedComments = [...comments, newComment.trim()];
-      setComments(updatedComments);
-      setNewComment("");
-      await onUpdate(task.id, title, description, dueDate, updatedComments);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const trimmedTitle = title.trim();
+    const trimmedDescription = description.trim();
+    const combinedDueDate = combineDateAndTime();
+    
+    if (trimmedTitle && (
+      trimmedTitle !== task.title || 
+      trimmedDescription !== (task.description || '') || 
+      combinedDueDate !== task.due_date || 
+      assignedTo !== (task.assigned_to || '')
+    )) {
+      await onUpdate(
+        task.id, 
+        trimmedTitle, 
+        trimmedDescription || undefined, 
+        combinedDueDate, 
+        assignedTo || undefined
+      )
+    }
+    setIsEditing(false)
+  }
+
+  const addComment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newComment.trim()) return;
+    
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+      
+      const userId = sessionData.session?.user.id;
+      if (!userId) {
+        console.error('User not authenticated');
+        return;
+      }
+      
+      const { data, error } = await supabase
+        .from('comments')
+        .insert([
+          { 
+            task_id: task.id, 
+            user_id: userId, 
+            content: newComment.trim() 
+          }
+        ])
+        .select()
+        .single();
+      
+      if (error) throw error;
+      
+      // Get the user's email
+      const { data: userData, error: userError } = await supabase
+        .from('profiles')
+        .select('email')
+        .eq('id', userId)
+        .single();
+      
+      if (!userError && userData) {
+        // Add the new comment to the state
+        setComments(prev => [{
+          ...data,
+          user_email: userData.email
+        }, ...prev]);
+      } else {
+        setComments(prev => [data, ...prev]);
+      }
+      
+      setNewComment('');
+    } catch (error) {
+      console.error('Error adding comment:', error);
     }
   };
 
   const closeModal = () => {
-    setIsModalOpen(false);
-    setIsEditing(false);
-    setTitle(task.title);
-    setDescription(task.description || "");
-    setDueDate(task.due_date || "");
-    setComments(task.comments || []);
+    setIsModalOpen(false)
+    setIsEditing(false)
+    setTitle(task.title)
+    setDescription(task.description || '')
+    
+    if (task.due_date) {
+      const date = new Date(task.due_date)
+      setDueDate(formatDateForInput(date))
+      setDueTime(formatTimeForInput(date))
+    } else {
+      setDueDate('')
+      setDueTime('')
+    }
+    
+    setAssignedTo(task.assigned_to || '')
+  }
+
+  const formatDate = (dateString: string) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleDateString();
   };
 
+  const formatDateTime = (dateString: string) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return `${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  };
+
+  // Get assignee email from the boardMembers array
+  const getAssigneeEmail = (userId?: string): string => {
+    if (!userId) return '';
+    const member = boardMembers.find(m => m.id === userId);
+    return member ? member.email : '';
+  };
+
+  // Determine if task is assigned to current user
+  const isAssignedToCurrentUser = async (): Promise<boolean> => {
+    if (!task.assigned_to) return false;
+    
+    const { data } = await supabase.auth.getSession();
+    const currentUserId = data.session?.user.id;
+    return currentUserId === task.assigned_to;
+  };
+
+  // Task card component
   return (
     <>
       <div
@@ -100,14 +298,46 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
+        {/* Task created indicator */}
+        <div className="absolute top-0 left-0 w-1 h-1 rounded-full bg-blue-500/50 m-1"></div>
+        
+        {/* Task content */}
         <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{task.title}</p>
-        {task.due_date && <p className="text-xs text-gray-400 mt-1">Due: {task.due_date}</p>}
-        <div className={`absolute right-1 top-1 transition-opacity flex gap-1 ${isHovered ? "opacity-100" : "opacity-0"}`}>
+        
+        {/* Task metadata indicators */}
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          {task.description && (
+            <div className="text-gray-400 flex items-center">
+              <span className="mr-1">📝</span>
+            </div>
+          )}
+          {task.due_date && (
+            <div className={`flex items-center ${isOverdue(task.due_date) ? 'text-red-400' : 'text-blue-400'}`}>
+              <span className="mr-1">📅</span>
+              <span>{formatDate(task.due_date)}</span>
+            </div>
+          )}
+          {(comments.length > 0 || (task.comments && task.comments.length > 0)) && (
+            <div className="text-gray-400 flex items-center">
+              <span className="mr-1">💬</span>
+              <span>{comments.length || task.comments?.length}</span>
+            </div>
+          )}
+          {task.assigned_to && (
+            <div className="text-purple-400 flex items-center ml-auto">
+              <span className="mr-1">👤</span>
+              <span className="truncate max-w-[100px]">{getAssigneeEmail(task.assigned_to)}</span>
+            </div>
+          )}
+        </div>
+        
+        {/* Edit and delete buttons */}
+        <div className={`absolute right-1 top-1 transition-opacity flex gap-1 ${isHovered ? 'opacity-100' : 'opacity-0'}`}>
           <button
             onClick={(e) => {
-              e.stopPropagation();
-              setIsModalOpen(true);
-              setIsEditing(true);
+              e.stopPropagation()
+              setIsModalOpen(true)
+              setIsEditing(true)
             }}
             className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-blue-400 rounded hover:bg-[#30363d]/70 transition-colors"
             title="Edit card"
@@ -116,8 +346,8 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
           </button>
           <button
             onClick={(e) => {
-              e.stopPropagation();
-              onDelete(task.id);
+              e.stopPropagation()
+              onDelete(task.id)
             }}
             className="w-6 h-6 flex items-center justify-center text-gray-400 hover:text-red-400 rounded hover:bg-[#30363d]/70 transition-colors"
             title="Delete card"
@@ -125,57 +355,253 @@ export default function Task({ task, onDelete, onUpdate }: TaskProps) {
             ×
           </button>
         </div>
+        
+        {/* Bottom bar for visual boundary */}
+        <div className="absolute bottom-0 left-1 right-1 h-0.5 bg-[#30363d]/50 rounded-full"></div>
       </div>
 
+      {/* Task Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div ref={modalRef} className="bg-[#161b22] rounded-lg shadow-2xl border border-[#30363d] w-full max-w-md mx-4 overflow-hidden relative">
+          <div 
+            ref={modalRef}
+            className="bg-[#161b22] rounded-lg shadow-2xl border border-[#30363d] w-full max-w-md mx-4 overflow-hidden relative max-h-[90vh] flex flex-col"
+          >
+            {/* Modal header */}
             <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-purple-600"></div>
-            <div className="p-4">
-              {isEditing ? (
+            <div className="flex justify-between items-center border-b border-[#30363d] p-4">
+              <h3 className="text-lg font-semibold text-gray-100">Task Details</h3>
+              <button 
+                onClick={closeModal} 
+                className="text-gray-400 hover:text-gray-200 text-xl"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Modal content */}
+            <div className="p-4 overflow-y-auto flex-1">
+          {isEditing ? (
                 <form onSubmit={handleSubmit}>
-                  <label className="block text-gray-400 text-sm mb-2">Title</label>
-                  <textarea
-                    ref={titleInputRef}
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    className="w-full min-h-[3rem] p-3 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none resize-none shadow-inner mb-4"
-                  />
-                  <label className="block text-gray-400 text-sm mb-2">Description</label>
-                  <textarea
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    className="w-full min-h-[6rem] p-3 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none resize-none shadow-inner mb-4"
-                  />
-                  <label className="block text-gray-400 text-sm mb-2">Due Date</label>
-                  <input
-                    type="date"
-                    value={dueDate}
-                    onChange={(e) => setDueDate(e.target.value)}
-                    className="w-full p-2 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner mb-4"
-                  />
-                  <button type="submit" className="w-full bg-blue-600 text-white rounded-md p-2 hover:bg-blue-700 transition-colors">
-                    Save
-                  </button>
+                  <div className="mb-4">
+                    <label className="block text-gray-400 text-sm mb-2">Title</label>
+                    <textarea
+                      ref={titleInputRef}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                      className="w-full min-h-[4rem] p-3 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none resize-none shadow-inner"
+                      placeholder="Task title"
+              />
+                  </div>
+
+                  <div className="mb-4">
+                    <label className="block text-gray-400 text-sm mb-2">Description</label>
+              <textarea
+                      value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                      className="w-full min-h-[8rem] p-3 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none resize-none shadow-inner"
+                      placeholder="Add a more detailed description..."
+                    />
+                  </div>
+
+                  <div className="mb-4">
+                    <label className="block text-gray-400 text-sm mb-2">Due Date & Time</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="date"
+                        value={dueDate}
+                        onChange={(e) => setDueDate(e.target.value)}
+                        className="flex-1 p-2 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner"
+                      />
+                      <input
+                        type="time"
+                        value={dueTime}
+                        onChange={(e) => setDueTime(e.target.value)}
+                        className="w-24 p-2 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mb-6">
+                    <label className="block text-gray-400 text-sm mb-2">Assign To</label>
+                    <select
+                      value={assignedTo}
+                      onChange={(e) => setAssignedTo(e.target.value)}
+                      className="w-full p-2 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner"
+                    >
+                      <option value="">Unassigned</option>
+                      {boardMembers.map(member => (
+                        <option key={member.id} value={member.id}>
+                          {member.email}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="flex justify-end gap-2">
+                <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditing(false)
+                        setTitle(task.title)
+                        setDescription(task.description || '')
+                        if (task.due_date) {
+                          const date = new Date(task.due_date)
+                          setDueDate(formatDateForInput(date))
+                          setDueTime(formatTimeForInput(date))
+                        } else {
+                          setDueDate('')
+                          setDueTime('')
+                        }
+                        setAssignedTo(task.assigned_to || '')
+                      }}
+                      className="px-3 py-1.5 text-sm bg-[#21262d] text-gray-300 rounded-md hover:bg-[#30363d] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                      type="submit"
+                      className="px-3 py-1.5 text-sm bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:from-blue-700 hover:to-blue-800 transition-colors"
+                >
+                  Save
+                </button>
+              </div>
                 </form>
               ) : (
-                <>
-                  <p className="text-gray-200">{task.description || "No description available."}</p>
-                  <p className="text-gray-400 mt-2">Due: {task.due_date || "No due date set"}</p>
-                  <h4 className="text-gray-400 mt-4">Comments:</h4>
-                  <ul className="mt-2 text-gray-300">
-                    {comments.map((comment, index) => (
-                      <li key={index} className="p-2 bg-[#21262d] rounded mb-2">{comment}</li>
-                    ))}
-                  </ul>
-                  <input type="text" value={newComment} onChange={(e) => setNewComment(e.target.value)} placeholder="Add a comment" className="w-full p-2 bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d]" />
-                  <button onClick={handleAddComment} className="w-full mt-2 bg-green-600 text-white rounded-md p-2 hover:bg-green-700">Add Comment</button>
-                </>
+                <div>
+                  <div className="mb-4">
+                    <h4 className="text-gray-400 text-sm mb-2">Title</h4>
+                    <p className="text-gray-200 whitespace-pre-wrap break-words p-3 bg-[#0d1117] rounded-md border border-[#30363d]">{task.title}</p>
+                  </div>
+
+                  <div className="mb-4">
+                    <h4 className="text-gray-400 text-sm mb-2">Description</h4>
+                    {task.description ? (
+                      <p className="text-gray-200 whitespace-pre-wrap break-words p-3 bg-[#0d1117] rounded-md border border-[#30363d]">
+                        {task.description}
+                      </p>
+                    ) : (
+                      <p className="text-gray-500 italic p-3 bg-[#0d1117] rounded-md border border-[#30363d]">
+                        No description provided
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="mb-4">
+                    <h4 className="text-gray-400 text-sm mb-2">Due Date & Time</h4>
+                    {task.due_date ? (
+                      <p className={`p-3 bg-[#0d1117] rounded-md border border-[#30363d] ${isOverdue(task.due_date) ? 'text-red-400' : 'text-gray-200'}`}>
+                        {formatDateTime(task.due_date)} {isOverdue(task.due_date) && '(Overdue)'}
+                      </p>
+                    ) : (
+                      <p className="text-gray-500 italic p-3 bg-[#0d1117] rounded-md border border-[#30363d]">
+                        No due date set
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="mb-6">
+                    <h4 className="text-gray-400 text-sm mb-2">Assigned To</h4>
+                    {task.assigned_to ? (
+                      <p className="p-3 bg-[#0d1117] rounded-md border border-[#30363d] text-purple-400 flex items-center">
+                        <span className="mr-2">👤</span> {getAssigneeEmail(task.assigned_to)}
+                      </p>
+                    ) : (
+                      <p className="text-gray-500 italic p-3 bg-[#0d1117] rounded-md border border-[#30363d]">
+                        Not assigned
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Comments section */}
+                  <div className="mt-6 border-t border-[#30363d] pt-4">
+                    <h4 className="text-gray-400 text-sm mb-3">Comments</h4>
+                    
+                    <form onSubmit={addComment} className="mb-4">
+                      <textarea
+                        value={newComment}
+                        onChange={(e) => setNewComment(e.target.value)}
+                        placeholder="Add a comment..."
+                        className="w-full min-h-[4rem] p-3 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none resize-none shadow-inner mb-2"
+                      />
+                      <div className="flex justify-end">
+                        <button
+                          type="submit"
+                          disabled={!newComment.trim()}
+                          className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          Add Comment
+                        </button>
+                      </div>
+                    </form>
+
+                    {loading ? (
+                      <div className="flex justify-center py-4">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
+                      </div>
+                    ) : comments.length > 0 ? (
+                      <div className="space-y-3 max-h-[200px] overflow-y-auto pr-1">
+                        {comments.map((comment) => (
+                          <div key={comment.id} className="bg-[#1c2129] p-3 rounded-md border border-[#30363d]">
+                            <div className="flex justify-between items-start mb-1">
+                              <span className="text-xs font-medium text-blue-400">{comment.user_email || 'Unknown'}</span>
+                              <span className="text-xs text-gray-500">{formatCommentDate(comment.created_at)}</span>
+                            </div>
+                            <p className="text-sm text-gray-200 whitespace-pre-wrap break-words">{comment.content}</p>
+                          </div>
+                        ))}
+            </div>
+          ) : (
+                      <p className="text-gray-500 italic text-center py-4">No comments yet</p>
+                    )}
+                  </div>
+
+                  <div className="flex justify-end gap-2 mt-6">
+                  <button
+                    onClick={() => setIsEditing(true)}
+                      className="px-3 py-1.5 text-sm bg-[#21262d] text-gray-300 rounded-md hover:bg-[#30363d] transition-colors"
+                  >
+                    Edit
+                  </button>
+                  <button
+                      onClick={closeModal}
+                      className="px-3 py-1.5 text-sm bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:from-blue-700 hover:to-blue-800 transition-colors"
+                  >
+                      Close
+                  </button>
+                </div>
+              </div>
               )}
             </div>
           </div>
         </div>
       )}
     </>
-  );
+  )
+}
+
+// Helper function to check if a date is overdue
+function isOverdue(dateString: string): boolean {
+  if (!dateString) return false;
+  const now = new Date();
+  const dueDate = new Date(dateString);
+  return dueDate < now;
+}
+
+// Format comment date
+function formatCommentDate(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffTime = Math.abs(now.getTime() - date.getTime());
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  
+  if (diffDays === 0) {
+    return `Today at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  } else if (diffDays === 1) {
+    return 'Yesterday';
+  } else if (diffDays < 7) {
+    return `${diffDays} days ago`;
+  } else {
+    return date.toLocaleDateString();
+  }
 }

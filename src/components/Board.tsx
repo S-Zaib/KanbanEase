@@ -2,9 +2,21 @@ import { useState, useEffect } from 'react'
 import { DragDropContext, DropResult } from '@hello-pangea/dnd'
 import { supabase, Database } from '../lib/supabase'
 import List from './List'
+import BoardMembers from './BoardMembers'
+import Logo from './Logo'
+
+interface BoardMember {
+  id: string;
+  email: string;
+  role?: string;
+}
 
 type List = Database['public']['Tables']['lists']['Row']
-type Task = Database['public']['Tables']['tasks']['Row']
+type Task = Database['public']['Tables']['tasks']['Row'] & {
+  description?: string | null;
+  due_date?: string;
+  assigned_to?: string;
+}
 type Board = Database['public']['Tables']['boards']['Row']
 
 type BoardProps = {
@@ -17,8 +29,11 @@ export default function Board({ userId }: BoardProps) {
   const [lists, setLists] = useState<List[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
-  const [isAddingList, setIsAddingList] = useState(false)
   const [newListName, setNewListName] = useState('')
+  const [newBoardName, setNewBoardName] = useState('')
+  const [isCreatingBoard, setIsCreatingBoard] = useState(false)
+  const [boardMembers, setBoardMembers] = useState<BoardMember[]>([])
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   useEffect(() => {
     fetchBoards()
@@ -27,6 +42,7 @@ export default function Board({ userId }: BoardProps) {
   useEffect(() => {
     if (currentBoard) {
       fetchLists()
+      fetchBoardMembers()
     }
   }, [currentBoard?.id])
 
@@ -37,22 +53,55 @@ export default function Board({ userId }: BoardProps) {
   }, [lists])
 
   const fetchBoards = async () => {
-    const { data, error } = await supabase
-      .from('boards')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at')
-    
-    if (error) {
+    try {
+      setLoading(true)
+      
+      // First, get boards the user owns
+      const { data: ownedBoards, error: ownedError } = await supabase
+        .from('boards')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at')
+      
+      if (ownedError) throw ownedError
+      
+      // Then, get boards the user is a member of
+      const { data: membershipData, error: membershipError } = await supabase
+        .from('board_members')
+        .select('board_id')
+        .eq('user_id', userId)
+      
+      if (membershipError) throw membershipError
+      
+      let allBoards = [...(ownedBoards || [])]
+      
+      // If user is a member of any boards, fetch those boards too
+      if (membershipData && membershipData.length > 0) {
+        const boardIds = membershipData.map(item => item.board_id)
+        
+        const { data: memberBoards, error: boardsError } = await supabase
+          .from('boards')
+          .select('*')
+          .in('id', boardIds)
+          .order('created_at')
+        
+        if (boardsError) throw boardsError
+        
+        if (memberBoards) {
+          allBoards = [...allBoards, ...memberBoards]
+        }
+      }
+      
+      setBoards(allBoards)
+      
+      if (allBoards.length > 0 && !currentBoard) {
+        setCurrentBoard(allBoards[0])
+      }
+    } catch (error) {
       console.error('Error fetching boards:', error)
-      return
+    } finally {
+      setLoading(false)
     }
-    
-    setBoards(data)
-    if (data.length > 0 && !currentBoard) {
-      setCurrentBoard(data[0])
-    }
-    setLoading(false)
   }
 
   const fetchLists = async () => {
@@ -87,6 +136,85 @@ export default function Board({ userId }: BoardProps) {
     }
     
     setTasks(data || [])
+  }
+
+  const fetchBoardMembers = async () => {
+    try {
+      // Fetch the board owner first
+      const { data: boardData, error: boardError } = await supabase
+        .from('boards')
+        .select('user_id')
+        .eq('id', currentBoard?.id)
+        .single()
+      
+      if (boardError) throw boardError
+      
+      // Get the owner's profile from the profiles table
+      const { data: ownerProfile, error: profileError } = await supabase
+        .from('profiles')
+        .select('email')
+        .eq('id', boardData.user_id)
+        .single()
+      
+      if (profileError && profileError.code !== 'PGRST116') {
+        // PGRST116 means not found, which is fine - we'll use a default value
+        console.warn('Owner profile not found:', profileError)
+      }
+      
+      // Then fetch other members
+      const { data: membersData, error: membersError } = await supabase
+        .from('board_members')
+        .select('id, user_id, role')
+        .eq('board_id', currentBoard?.id)
+      
+      if (membersError) throw membersError
+      
+      // Combine the owner and members into one array
+      const allMembers: BoardMember[] = [
+        {
+          id: boardData.user_id,
+          email: ownerProfile?.email || 'Owner',
+          role: 'owner'
+        }
+      ]
+      
+      // If there are other members, fetch their profiles
+      if (membersData && membersData.length > 0) {
+        // Get all user IDs
+        const memberUserIds = membersData.map(member => member.user_id)
+        
+        // Fetch all profiles in one query
+        const { data: memberProfiles, error: memberProfilesError } = await supabase
+          .from('profiles')
+          .select('id, email')
+          .in('id', memberUserIds)
+        
+        if (memberProfilesError) {
+          console.warn('Error fetching member profiles:', memberProfilesError)
+        }
+        
+        // Create a map for quick lookup
+        const profileMap = new Map()
+        if (memberProfiles) {
+          memberProfiles.forEach(profile => {
+            profileMap.set(profile.id, profile.email)
+          })
+        }
+        
+        // Add members with their emails
+        membersData.forEach(member => {
+          allMembers.push({
+            id: member.user_id,
+            email: profileMap.get(member.user_id) || 'Unknown',
+            role: member.role
+          })
+        })
+      }
+      
+      setBoardMembers(allMembers)
+    } catch (error) {
+      console.error('Error fetching board members:', error)
+    }
   }
 
   const setupRealtimeSubscription = () => {
@@ -125,23 +253,45 @@ export default function Board({ userId }: BoardProps) {
     }
   }, [currentBoard?.id, lists])
 
-  const handleCreateBoard = async () => {
-    const name = prompt('Enter board name:')
-    if (!name) return
-
-    const { data, error } = await supabase
-      .from('boards')
-      .insert([{ name, user_id: userId }])
-      .select()
-      .single()
+  const handleCreateBoard = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
     
-    if (error) {
+    if (!newBoardName.trim()) return
+    
+    try {
+      // First check if the user is still authenticated
+      const { data: session } = await supabase.auth.getSession()
+      if (!session.session) {
+        throw new Error('Your session has expired. Please sign in again.')
+      }
+      
+      // Then try to create the board
+      const { data, error } = await supabase
+        .from('boards')
+        .insert([{ 
+          name: newBoardName.trim(), 
+          user_id: userId 
+        }])
+        .select()
+        .single()
+      
+      if (error) throw error
+      
+      setBoards([...boards, data])
+      setCurrentBoard(data)
+      setNewBoardName('')
+      setIsCreatingBoard(false)
+    } catch (error: any) {
       console.error('Error creating board:', error)
-      return
+      
+      // Show a more user-friendly message
+      alert(`Failed to create board: ${error.message || 'Unknown error'}`)
+      
+      // If it's an authentication error, sign the user out
+      if (error.message?.includes('session') || error.code === 'PGRST301') {
+        handleSignOut()
+      }
     }
-
-    setBoards([...boards, data])
-    setCurrentBoard(data)
   }
 
   const handleAddList = async (name: string) => {
@@ -155,7 +305,6 @@ export default function Board({ userId }: BoardProps) {
       console.error('Error adding list:', error)
     }
 
-    setIsAddingList(false)
     setNewListName('')
   }
 
@@ -171,7 +320,7 @@ export default function Board({ userId }: BoardProps) {
       return
     }
 
-    setTasks(prev => [...prev, data])
+    setTasks(prev => [...prev, data as Task])
   }
 
   const handleDeleteTask = async (taskId: string) => {
@@ -188,20 +337,57 @@ export default function Board({ userId }: BoardProps) {
     setTasks(prev => prev.filter(task => task.id !== taskId))
   }
 
-  const handleUpdateTask = async (taskId: string, title: string) => {
-    const { data, error } = await supabase
+  const handleUpdateTask = async (taskId: string, title: string, description?: string, due_date?: string, assigned_to?: string) => {
+    try {
+      const updateData: any = { title }
+      
+      if (description !== undefined) {
+        updateData.description = description
+      }
+      
+      if (due_date !== undefined) {
+        updateData.due_date = due_date
+      }
+      
+      if (assigned_to !== undefined) {
+        updateData.assigned_to = assigned_to
+      }
+      
+      const { error } = await supabase
+        .from('tasks')
+        .update(updateData)
+        .eq('id', taskId)
+
+      if (error) throw error
+
+      setTasks(prev => prev.map(task => task.id === taskId ? {
+        ...task,
+        title,
+        description: description !== undefined ? description : task.description,
+        due_date: due_date !== undefined ? due_date : task.due_date,
+        assigned_to: assigned_to !== undefined ? assigned_to : task.assigned_to
+      } : task))
+    } catch (error) {
+      console.error('Error updating task:', error)
+    }
+  }
+
+  const handleMoveTask = async (taskId: string, sourceListId: string, destinationListId: string) => {
+    const { error } = await supabase
       .from('tasks')
-      .update({ title })
+      .update({ list_id: destinationListId })
       .eq('id', taskId)
-      .select()
-      .single()
     
     if (error) {
-      console.error('Error updating task:', error)
+      console.error('Error moving task:', error)
       return
     }
 
-    setTasks(prev => prev.map(task => task.id === taskId ? data : task))
+    setTasks(prev => prev.map(task => 
+      task.id === taskId 
+        ? { ...task, list_id: destinationListId }
+        : task
+    ))
   }
 
   const handleDragEnd = async (result: DropResult) => {
@@ -211,24 +397,27 @@ export default function Board({ userId }: BoardProps) {
 
     if (source.droppableId === destination.droppableId) return
 
-    const { data, error } = await supabase
-      .from('tasks')
-      .update({ list_id: destination.droppableId })
-      .eq('id', draggableId)
-      .select()
-      .single()
+    await handleMoveTask(draggableId, source.droppableId, destination.droppableId)
+  }
 
-    if (error) {
-      console.error('Error moving task:', error)
-      return
+  const handleSignOut = async () => {
+    const { error } = await supabase.auth.signOut()
+  if (error) {
+      console.error('Error signing out:', error)
     }
+  }
 
-    setTasks(prev => prev.map(task => task.id === draggableId ? data : task))
+  const handleUpdateListTitle = (listId: string, title: string) => {
+    // Add this functionality if needed
+  }
+
+  const handleDeleteList = (listId: string) => {
+    // Add this functionality if needed
   }
 
   if (loading) {
     return (
-      <div className="min-h-full w-full flex items-center justify-center">
+      <div className="min-h-screen w-full flex items-center justify-center">
         <div className="flex flex-col items-center gap-4">
           <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
           <div className="text-xl text-gray-200">Loading your boards...</div>
@@ -237,120 +426,229 @@ export default function Board({ userId }: BoardProps) {
     )
   }
 
-  if (boards.length === 0) {
-    return (
-      <div className="h-full w-full flex items-center justify-center p-4">
-        <div className="bg-[#161b22] p-8 rounded-lg shadow-2xl max-w-md w-full border border-[#30363d] relative overflow-hidden">
-          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-purple-600"></div>
-          <h2 className="text-2xl font-bold text-gray-100 mb-4 text-center">Create Your First Board</h2>
-          <p className="text-gray-400 mb-6 text-center">Start organizing your tasks with a new board</p>
+  return (
+    <div className="h-screen bg-[#0d1117] text-gray-200 flex overflow-hidden">
+      {/* Sidebar */}
+      <div 
+        className={`bg-[#161b22] border-r border-[#30363d] flex flex-col z-20 transition-all duration-300 ${
+          sidebarCollapsed ? 'w-16' : 'w-64'
+        }`}
+      >
+        {/* Sidebar header with logo and collapse button */}
+        <div className="p-4 border-b border-[#30363d] flex items-center justify-between">
+          {!sidebarCollapsed && (
+            <div className="flex-1">
+              <Logo size="small" />
+            </div>
+          )}
           <button
-            onClick={handleCreateBoard}
-            className="w-full px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:from-blue-700 hover:to-blue-800 transition-all shadow-lg hover:shadow-blue-900/30 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-[#161b22] font-medium"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-200 rounded-md hover:bg-[#30363d] transition-colors"
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            Create Board
+            {sidebarCollapsed ? '→' : '←'}
           </button>
         </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="w-full h-full flex flex-col">
-      <div className="border-b border-[#30363d] bg-[#161b22] p-2 z-10">
-        <div className="flex items-center justify-between px-2">
-          <div className="flex items-center gap-2">
-            <select
-              value={currentBoard?.id}
-              onChange={(e) => {
-                const board = boards.find(b => b.id === e.target.value)
-                if (board) setCurrentBoard(board)
-              }}
-              className="px-3 py-1.5 bg-[#21262d] text-gray-200 border border-[#30363d] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 shadow-inner"
-            >
-              {boards.map((board) => (
-                <option key={board.id} value={board.id} className="bg-[#21262d] text-gray-200">
-                  {board.name}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={handleCreateBoard}
-              className="px-3 py-1.5 text-sm text-gray-300 hover:text-white bg-[#21262d] hover:bg-[#30363d] rounded-md border border-[#30363d] transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-md hover:shadow-lg"
-            >
-              New Board
-            </button>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setIsAddingList(true)}
-              className="px-3 py-1.5 text-sm bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:from-blue-700 hover:to-blue-800 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-md hover:shadow-lg flex items-center gap-1"
-            >
-              <span>+</span> Add List
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <DragDropContext onDragEnd={handleDragEnd}>
-        <div className="flex-1 p-4 overflow-x-auto">
-          <div className="flex gap-4 items-start min-h-full">
-            {lists.map((list) => (
-              <List
-                key={list.id}
-                list={list}
-                tasks={tasks.filter((task) => task.list_id === list.id)}
-                onAddTask={handleAddTask}
-                onDeleteTask={handleDeleteTask}
-                onUpdateTask={handleUpdateTask}
-              />
-            ))}
-            
-            {isAddingList ? (
-              <div className="bg-[#21262d] rounded-lg w-72 flex-shrink-0 border border-[#30363d] shadow-xl overflow-hidden">
-                <div className="p-3 border-b border-[#30363d]">
+        
+        {/* Boards section */}
+        <div className="flex-1 overflow-y-auto">
+          {!sidebarCollapsed && (
+            <div className="p-4">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Boards</h2>
+                <button
+                  onClick={() => setIsCreatingBoard(true)}
+                  className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-[#30363d] transition-colors"
+                  title="Create new board"
+                >
+                  +
+                </button>
+              </div>
+              
+              {isCreatingBoard ? (
+                <form onSubmit={handleCreateBoard} className="mb-4">
                   <input
                     type="text"
-                    value={newListName}
-                    onChange={(e) => setNewListName(e.target.value)}
-                    placeholder="Enter list title..."
-                    className="w-full px-2 py-1 text-sm bg-[#161b22] text-gray-200 rounded border border-[#30363d] focus:border-blue-500 focus:outline-none"
+                    value={newBoardName}
+                    onChange={(e) => setNewBoardName(e.target.value)}
+                    placeholder="Board name"
+                    className="w-full p-2 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner mb-2"
                     autoFocus
                   />
-                  <div className="flex gap-2 mt-2">
+                  <div className="flex gap-2">
                     <button
-                      onClick={() => {
-                        if (newListName.trim()) {
-                          handleAddList(newListName.trim())
-                        }
-                      }}
-                      className="px-3 py-1 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700"
+                      type="submit"
+                      disabled={!newBoardName.trim()}
+                      className="flex-1 p-1.5 text-xs font-medium bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 transition-colors"
                     >
-                      Add List
+                      Create
                     </button>
                     <button
+                      type="button"
                       onClick={() => {
-                        setIsAddingList(false)
-                        setNewListName('')
+                        setIsCreatingBoard(false)
+                        setNewBoardName('')
                       }}
-                      className="px-3 py-1 text-xs font-medium bg-[#30363d] text-gray-200 rounded hover:bg-[#2b3139]"
+                      className="p-1.5 text-xs font-medium bg-[#30363d] text-gray-300 rounded hover:bg-[#3b434f] transition-colors"
                     >
                       Cancel
                     </button>
                   </div>
+                </form>
+              ) : boards.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-gray-400 mb-4">No boards yet</p>
+                  <button
+                    onClick={() => setIsCreatingBoard(true)}
+                    className="px-3 py-1.5 text-sm bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:from-blue-700 hover:to-blue-800 transition-colors"
+                  >
+                    Create your first board
+                  </button>
+                </div>
+              ) : (
+                <ul className="space-y-1">
+                  {boards.map((board) => (
+                    <li key={board.id}>
+                      <button
+                        className={`w-full p-2 text-left rounded-md flex items-center transition-colors ${
+                          currentBoard?.id === board.id
+                            ? 'bg-blue-600 text-white'
+                            : 'text-gray-300 hover:bg-[#30363d] hover:text-white'
+                        }`}
+                        onClick={() => setCurrentBoard(board)}
+                      >
+                        <span className="truncate">{board.name}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          
+          {sidebarCollapsed && (
+            <div className="flex flex-col items-center pt-4">
+              <button
+                onClick={() => setIsCreatingBoard(true)}
+                className="w-8 h-8 rounded flex items-center justify-center text-gray-400 hover:text-gray-200 hover:bg-[#30363d] transition-colors mb-4"
+                title="Create new board"
+              >
+                +
+              </button>
+              
+              {boards.map((board) => (
+                <button
+                  key={board.id}
+                  className={`w-8 h-8 mb-2 rounded-md flex items-center justify-center ${
+                    currentBoard?.id === board.id
+                      ? 'bg-blue-600 text-white'
+                      : 'text-gray-300 hover:bg-[#30363d] hover:text-white'
+                  }`}
+                  onClick={() => setCurrentBoard(board)}
+                  title={board.name}
+                >
+                  {board.name.charAt(0).toUpperCase()}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Sidebar footer with user controls */}
+        <div className="p-4 border-t border-[#30363d]">
+          <button
+            onClick={handleSignOut}
+            className={`text-gray-400 hover:text-white transition-colors ${
+              sidebarCollapsed ? 'w-8 h-8 flex items-center justify-center' : 'w-full text-left'
+            }`}
+            title="Sign out"
+          >
+            {sidebarCollapsed ? '👋' : 'Sign Out'}
+          </button>
+        </div>
+      </div>
+
+      {/* Main content area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top header for current board info */}
+        {currentBoard && (
+          <div className="p-4 border-b border-[#30363d] bg-[#161b22] shadow-md z-10 backdrop-blur bg-opacity-80">
+            <div className="flex justify-between items-center">
+              <h1 className="text-xl font-bold text-white">{currentBoard.name}</h1>
+              <BoardMembers boardId={currentBoard.id} ownerId={userId} />
+            </div>
+          </div>
+        )}
+
+        {/* Main board content with lists and tasks */}
+        {currentBoard ? (
+    <DragDropContext onDragEnd={handleDragEnd}>
+            <div className="flex-1 overflow-x-auto p-6">
+              <div className="flex gap-6 items-start">
+        {lists.map((list) => (
+                  <List
+            key={list.id}
+            list={list}
+            tasks={tasks.filter((task) => task.list_id === list.id)}
+                    onAddTask={handleAddTask}
+                    onDeleteTask={handleDeleteTask}
+                    onUpdateTask={handleUpdateTask}
+                    onUpdateListTitle={handleUpdateListTitle}
+                    onDeleteList={handleDeleteList}
+                    onMoveTask={handleMoveTask}
+                    boardMembers={boardMembers}
+          />
+        ))}
+
+                <div className="w-72 shrink-0 bg-[#161b22] rounded-lg border border-[#30363d] shadow-md overflow-hidden">
+                  <form onSubmit={(e) => {
+                    e.preventDefault()
+                    if (newListName.trim()) {
+                      handleAddList(newListName.trim())
+                    }
+                  }} className="p-2">
+              <input
+                type="text"
+                      placeholder="Add a new list"
+                value={newListName}
+                onChange={(e) => setNewListName(e.target.value)}
+                      className="w-full p-2 bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner"
+              />
+                <button
+                      type="submit"
+                      disabled={!newListName.trim()}
+                      className="mt-2 w-full p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                      Add List
+                </button>
+                  </form>
                 </div>
               </div>
-            ) : (
-              <div 
-                onClick={() => setIsAddingList(true)}
-                className="bg-[#21262d]/70 hover:bg-[#21262d] rounded-lg w-72 h-12 flex-shrink-0 border border-dashed border-[#30363d] flex items-center justify-center text-gray-400 hover:text-gray-200 cursor-pointer transition-colors"
-              >
-                <span className="text-lg mr-1">+</span> Add another list
-              </div>
-            )}
+            </div>
+          </DragDropContext>
+        ) : (
+          <div className="flex-1 flex items-center justify-center p-4">
+            <div className="bg-[#161b22] p-8 rounded-lg shadow-2xl max-w-md w-full border border-[#30363d] relative overflow-hidden">
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-purple-600"></div>
+              <h2 className="text-2xl font-bold text-gray-100 mb-4 text-center">Select or Create a Board</h2>
+              <p className="text-gray-400 mb-6 text-center">
+                {boards.length > 0 
+                  ? "Please select a board from the sidebar to get started"
+                  : "Create your first board to start organizing your tasks"
+                }
+              </p>
+              {boards.length === 0 && (
+                <button
+                  onClick={() => setIsCreatingBoard(true)}
+                  className="w-full px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-md hover:from-blue-700 hover:to-blue-800 transition-all shadow-lg hover:shadow-blue-900/30 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-[#161b22] font-medium"
+                >
+                  Create Board
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      </DragDropContext>
+        )}
+      </div>
     </div>
   )
 }
