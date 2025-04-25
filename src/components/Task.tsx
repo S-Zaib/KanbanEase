@@ -18,6 +18,17 @@ interface BoardMember {
   email: string;
 }
 
+// Type for subtasks
+interface Subtask {
+  id: string;
+  task_id: string;
+  title: string;
+  is_completed: boolean;
+  created_at: string;
+  updated_at: string;
+  position: number;
+}
+
 // Enhanced type for Task with additional properties
 type EnhancedTask = Database['public']['Tables']['tasks']['Row'] & {
   description?: string | null;
@@ -25,6 +36,7 @@ type EnhancedTask = Database['public']['Tables']['tasks']['Row'] & {
   assigned_to?: string;
   assignee_email?: string;
   comments?: Comment[];
+  subtasks?: Subtask[];
 };
 
 type TaskProps = {
@@ -52,6 +64,9 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
   const [comments, setComments] = useState<Comment[]>(task.comments || [])
   const [newComment, setNewComment] = useState('')
   const [loading, setLoading] = useState(false)
+  const [subtasks, setSubtasks] = useState<Subtask[]>([])
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
+  const [subtaskProgress, setSubtaskProgress] = useState({ completed: 0, total: 0 })
   
   const modalRef = useRef<HTMLDivElement>(null)
   const titleInputRef = useRef<HTMLTextAreaElement>(null)
@@ -93,6 +108,7 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
   useEffect(() => {
     if (isModalOpen) {
       fetchComments();
+      fetchSubtasks();
     }
   }, [isModalOpen]);
 
@@ -166,6 +182,31 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
       console.error('Error fetching comments:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchSubtasks = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('subtasks')
+        .select('*')
+        .eq('task_id', task.id)
+        .order('position', { ascending: true });
+      
+      if (error) throw error;
+      
+      setSubtasks(data || []);
+      
+      // Calculate progress
+      if (data) {
+        const completed = data.filter(subtask => subtask.is_completed).length;
+        setSubtaskProgress({
+          completed,
+          total: data.length
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching subtasks:', error);
     }
   };
 
@@ -289,6 +330,92 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
     return currentUserId === task.assigned_to;
   };
 
+  // Add handler to create subtask
+  const addSubtask = async () => {
+    if (!newSubtaskTitle.trim()) return;
+    
+    try {
+      // Find the highest position and add 1
+      const position = subtasks.length > 0 
+        ? Math.max(...subtasks.map(s => s.position)) + 1 
+        : 0;
+      
+      const { data, error } = await supabase
+        .from('subtasks')
+        .insert([{
+          task_id: task.id,
+          title: newSubtaskTitle.trim(),
+          position
+        }])
+        .select()
+        .single();
+      
+      if (error) throw error;
+      
+      setSubtasks(prev => [...prev, data]);
+      setNewSubtaskTitle('');
+      setSubtaskProgress(prev => ({
+        completed: prev.completed,
+        total: prev.total + 1
+      }));
+    } catch (error) {
+      console.error('Error adding subtask:', error);
+    }
+  };
+
+  // Add handler to toggle subtask completion
+  const toggleSubtask = async (subtaskId: string, currentStatus: boolean) => {
+    try {
+      const { error } = await supabase
+        .from('subtasks')
+        .update({ is_completed: !currentStatus })
+        .eq('id', subtaskId);
+      
+      if (error) throw error;
+      
+      const updatedSubtasks = subtasks.map(subtask => 
+        subtask.id === subtaskId 
+          ? { ...subtask, is_completed: !currentStatus } 
+          : subtask
+      );
+      
+      setSubtasks(updatedSubtasks);
+      
+      // Update progress
+      const completed = updatedSubtasks.filter(subtask => subtask.is_completed).length;
+      setSubtaskProgress({
+        completed,
+        total: updatedSubtasks.length
+      });
+    } catch (error) {
+      console.error('Error toggling subtask:', error);
+    }
+  };
+
+  // Add handler to delete subtask
+  const deleteSubtask = async (subtaskId: string) => {
+    try {
+      const { error } = await supabase
+        .from('subtasks')
+        .delete()
+        .eq('id', subtaskId);
+      
+      if (error) throw error;
+      
+      const filteredSubtasks = subtasks.filter(subtask => subtask.id !== subtaskId);
+      setSubtasks(filteredSubtasks);
+      
+      // Update progress
+      const completed = filteredSubtasks.filter(subtask => subtask.is_completed).length;
+      setSubtaskProgress({
+        completed,
+        total: filteredSubtasks.length
+      });
+    } catch (error) {
+      console.error('Error deleting subtask:', error);
+    }
+  };
+
   // Task card component
   return (
     <>
@@ -327,6 +454,12 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
             <div className="text-purple-400 flex items-center ml-auto">
               <span className="mr-1">👤</span>
               <span className="truncate max-w-[100px]">{getAssigneeEmail(task.assigned_to)}</span>
+            </div>
+          )}
+          {subtaskProgress.total > 0 && (
+            <div className="text-gray-400 flex items-center">
+              <span className="mr-1">✓</span>
+              <span>{subtaskProgress.completed}/{subtaskProgress.total}</span>
             </div>
           )}
         </div>
@@ -554,6 +687,83 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
           ) : (
                       <p className="text-gray-500 italic text-center py-4">No comments yet</p>
                     )}
+                  </div>
+
+                  {/* Checklist section */}
+                  <div className="mt-6 border-t border-[#30363d] pt-4">
+                    <h4 className="text-gray-400 text-sm mb-3 flex justify-between items-center">
+                      <span>Checklist {subtaskProgress.total > 0 && `(${subtaskProgress.completed}/${subtaskProgress.total})`}</span>
+                      {subtaskProgress.total > 0 && (
+                        <span className="text-xs text-blue-400">
+                          {Math.round((subtaskProgress.completed / subtaskProgress.total) * 100)}%
+                        </span>
+                      )}
+                    </h4>
+                    
+                    {/* Progress bar */}
+                    {subtaskProgress.total > 0 && (
+                      <div className="w-full h-1.5 bg-[#21262d] rounded-full mb-4 overflow-hidden">
+                        <div 
+                          className="h-full bg-blue-500 rounded-full"
+                          style={{ 
+                            width: `${(subtaskProgress.completed / subtaskProgress.total) * 100}%`,
+                            transition: 'width 0.3s ease-in-out' 
+                          }}
+                        ></div>
+                      </div>
+                    )}
+                    
+                    {/* Subtasks list */}
+                    <div className="space-y-2 mb-4">
+                      {subtasks.map(subtask => (
+                        <div 
+                          key={subtask.id} 
+                          className="flex items-center p-2 rounded hover:bg-[#1c2129] group"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={subtask.is_completed}
+                            onChange={() => toggleSubtask(subtask.id, subtask.is_completed)}
+                            className="mr-3 h-4 w-4 rounded border-gray-600 bg-[#0d1117] checked:bg-blue-500 focus:ring-0 focus:ring-offset-0"
+                          />
+                          <span 
+                            className={`flex-grow text-sm ${subtask.is_completed ? 'text-gray-500 line-through' : 'text-gray-200'}`}
+                          >
+                            {subtask.title}
+                          </span>
+                          <button
+                            onClick={() => deleteSubtask(subtask.id)}
+                            className="text-gray-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    
+                    {/* Add subtask form */}
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        value={newSubtaskTitle}
+                        onChange={(e) => setNewSubtaskTitle(e.target.value)}
+                        placeholder="Add a subtask..."
+                        className="flex-grow p-2 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            addSubtask();
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={addSubtask}
+                        disabled={!newSubtaskTitle.trim()}
+                        className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Add
+                      </button>
+                    </div>
                   </div>
 
                   <div className="flex justify-end gap-2 mt-6">

@@ -102,6 +102,35 @@ export interface Database extends SupabaseDatabase {
           created_at?: string;
         };
       };
+      subtasks: {
+        Row: {
+          id: string;
+          task_id: string;
+          title: string;
+          is_completed: boolean;
+          created_at: string;
+          updated_at: string;
+          position: number;
+        };
+        Insert: {
+          id?: string;
+          task_id: string;
+          title: string;
+          is_completed?: boolean;
+          created_at?: string;
+          updated_at?: string;
+          position?: number;
+        };
+        Update: {
+          id?: string;
+          task_id?: string;
+          title?: string;
+          is_completed?: boolean;
+          created_at?: string;
+          updated_at?: string;
+          position?: number;
+        };
+      };
     } & SupabaseDatabase['public']['Tables'];
   };
 } 
