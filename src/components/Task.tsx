@@ -331,6 +331,13 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
     console.log('Submitting with priority:', priority); // Debug log
     
     const trimmedTitle = title.trim();
+    
+    // Validate title length
+    if (!trimmedTitle || trimmedTitle.length > 50) {
+      alert('Title must be between 1 and 50 characters');
+      return;
+    }
+    
     const trimmedDescription = description.trim();
     const combinedDueDate = combineDateAndTime();
     
@@ -769,8 +776,12 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                       className="w-full min-h-[4rem] p-3 text-sm bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none resize-none shadow-inner"
-                      placeholder="Task title"
+                      placeholder="Task title (1-50 characters)"
+              maxLength={50}
               />
+                    <div className="mt-1 text-xs text-gray-400">
+                      {title.length}/50 characters
+                    </div>
                   </div>
 
                   <div className="mb-4">

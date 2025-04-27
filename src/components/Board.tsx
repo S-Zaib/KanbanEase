@@ -722,6 +722,43 @@ export default function Board({ userId }: BoardProps) {
     return tasks.filter(taskMatchesFilters);
   }, [tasks, filters]);
 
+  const handleDeleteBoard = async (boardId: string) => {
+    // First confirm with the user
+    if (!window.confirm("Are you sure you want to delete this board? This action cannot be undone and will delete all lists and tasks within the board.")) {
+      return;
+    }
+    
+    try {
+      // Check if user is the owner of the board
+      const boardToDelete = boards.find(b => b.id === boardId);
+      if (!boardToDelete || boardToDelete.user_id !== userId) {
+        alert("You can only delete boards that you own.");
+        return;
+      }
+      
+      // Delete the board
+      const { error } = await supabase
+        .from('boards')
+        .delete()
+        .eq('id', boardId);
+      
+      if (error) throw error;
+      
+      // Update state
+      setBoards(prev => prev.filter(board => board.id !== boardId));
+      
+      // If the deleted board was the current board, set a new current board
+      if (currentBoard?.id === boardId) {
+        const remainingBoards = boards.filter(board => board.id !== boardId);
+        setCurrentBoard(remainingBoards.length > 0 ? remainingBoards[0] : null);
+      }
+      
+    } catch (error) {
+      console.error('Error deleting board:', error);
+      alert(`Failed to delete board: ${error.message || 'Unknown error'}`);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen w-full flex items-center justify-center">
@@ -816,16 +853,35 @@ export default function Board({ userId }: BoardProps) {
                 <ul className="space-y-1">
                   {boards.map((board) => (
                     <li key={board.id}>
-                      <button
-                        className={`w-full p-2 text-left rounded-md flex items-center transition-colors ${
-                          currentBoard?.id === board.id
-                            ? 'bg-blue-600 text-white'
-                            : 'text-gray-300 hover:bg-[#30363d] hover:text-white'
-                        }`}
-                        onClick={() => setCurrentBoard(board)}
-                      >
-                        <span className="truncate">{board.name}</span>
-                      </button>
+                      <div className="flex w-full">
+                        <button
+                          className={`flex-1 p-2 text-left rounded-l-md flex items-center transition-colors ${
+                            currentBoard?.id === board.id
+                              ? 'bg-blue-600 text-white'
+                              : 'text-gray-300 hover:bg-[#30363d] hover:text-white'
+                          }`}
+                          onClick={() => setCurrentBoard(board)}
+                        >
+                          <span className="truncate">{board.name}</span>
+                        </button>
+                        {/* Only show delete button for boards owned by the user */}
+                        {board.user_id === userId && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation(); // Prevent triggering the board selection
+                              handleDeleteBoard(board.id);
+                            }}
+                            className={`p-2 rounded-r-md transition-colors text-gray-400 hover:text-red-400 ${
+                              currentBoard?.id === board.id
+                                ? 'bg-blue-600'
+                                : 'hover:bg-[#30363d]'
+                            }`}
+                            title="Delete board"
+                          >
+                            🗑️
+                          </button>
+                        )}
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -844,18 +900,31 @@ export default function Board({ userId }: BoardProps) {
               </button>
               
               {boards.map((board) => (
-                <button
-                  key={board.id}
-                  className={`w-8 h-8 mb-2 rounded-md flex items-center justify-center ${
-                    currentBoard?.id === board.id
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-300 hover:bg-[#30363d] hover:text-white'
-                  }`}
-                  onClick={() => setCurrentBoard(board)}
-                  title={board.name}
-                >
-                  {board.name.charAt(0).toUpperCase()}
-                </button>
+                <div key={board.id} className="relative mb-2">
+                  <button
+                    className={`w-8 h-8 rounded-md flex items-center justify-center ${
+                      currentBoard?.id === board.id
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-300 hover:bg-[#30363d] hover:text-white'
+                    }`}
+                    onClick={() => setCurrentBoard(board)}
+                    title={board.name}
+                  >
+                    {board.name.charAt(0).toUpperCase()}
+                  </button>
+                  {board.user_id === userId && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteBoard(board.id);
+                      }}
+                      className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full text-white text-xs flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity"
+                      title="Delete board"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
           )}
@@ -881,7 +950,19 @@ export default function Board({ userId }: BoardProps) {
         {currentBoard && (
           <div className="p-4 border-b border-[#30363d] bg-[#161b22] shadow-md z-10 backdrop-blur bg-opacity-80">
             <div className="flex justify-between items-center">
-              <h1 className="text-xl font-bold text-white">{currentBoard.name}</h1>
+              <div className="flex items-center">
+                <h1 className="text-xl font-bold text-white">{currentBoard.name}</h1>
+                {/* Only show delete button for boards owned by the user */}
+                {currentBoard.user_id === userId && (
+                  <button
+                    onClick={() => handleDeleteBoard(currentBoard.id)}
+                    className="ml-3 px-2 py-1 text-xs text-gray-400 hover:text-red-400 hover:bg-[#21262d] rounded transition-colors"
+                    title="Delete board"
+                  >
+                    Delete Board
+                  </button>
+                )}
+              </div>
               <BoardMembers boardId={currentBoard.id} ownerId={userId} />
             </div>
           </div>
