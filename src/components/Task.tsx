@@ -415,6 +415,22 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
       console.error('Error deleting subtask:', error);
     }
   };
+  
+//color-coded label
+  function Task({ title, labels }) {
+  return (
+    <div className="task">
+      <h3>{title}</h3>
+      <div className="labels">
+        {labels.map((label, index) => (
+          <span key={index} style={{ backgroundColor: label.color }} className="label">
+            {label.text}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
   // Task card component
   return (
