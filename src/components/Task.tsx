@@ -432,6 +432,61 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
   );
 }
 
+//priority levels
+
+function Task({ title, labels, priority }) {
+  // Helper to get color based on priority
+  const getPriorityColor = (priority) => {
+    switch (priority) {
+      case 'High':
+        return 'red';
+      case 'Medium':
+        return 'orange';
+      case 'Low':
+        return 'green';
+      default:
+        return 'gray';
+    }
+  };
+
+  return (
+    <div className="task">
+      <h3>{title}</h3>
+
+      {/* Priority Badge */}
+      <div
+        className="priority"
+        style={{
+          backgroundColor: getPriorityColor(priority),
+          color: 'white',
+          padding: '4px 8px',
+          borderRadius: '4px',
+          display: 'inline-block',
+          marginBottom: '8px',
+        }}
+      >
+        {priority} Priority
+      </div>
+
+      {/* Labels */}
+      <div className="labels">
+        {labels.map((label, index) => (
+          <span
+            key={index}
+            style={{ backgroundColor: label.color }}
+            className="label"
+          >
+            {label.text}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default Task;
+
+
   // Task card component
   return (
     <>
