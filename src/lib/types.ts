@@ -14,6 +14,7 @@ export interface Database extends SupabaseDatabase {
           description?: string;
           due_date?: string;
           assigned_to?: string;
+          priority?: string;
         };
         Insert: {
           id?: string;
@@ -24,6 +25,7 @@ export interface Database extends SupabaseDatabase {
           description?: string;
           due_date?: string;
           assigned_to?: string;
+          priority?: string;
         };
         Update: {
           id?: string;
@@ -34,6 +36,7 @@ export interface Database extends SupabaseDatabase {
           description?: string;
           due_date?: string;
           assigned_to?: string;
+          priority?: string;
         };
       };
       comments: {
@@ -129,6 +132,49 @@ export interface Database extends SupabaseDatabase {
           created_at?: string;
           updated_at?: string;
           position?: number;
+        };
+      };
+      labels: {
+        Row: {
+          id: string;
+          board_id: string;
+          name: string;
+          color: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          board_id: string;
+          name: string;
+          color: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          board_id?: string;
+          name?: string;
+          color?: string;
+          created_at?: string;
+        };
+      };
+      task_labels: {
+        Row: {
+          id: string;
+          task_id: string;
+          label_id: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          task_id: string;
+          label_id: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          task_id?: string;
+          label_id?: string;
+          created_at?: string;
         };
       };
     } & SupabaseDatabase['public']['Tables'];

@@ -94,27 +94,48 @@ export const BoardProvider = ({ children, boardId = DEFAULT_BOARD_ID }: BoardPro
       .subscribe();
 
     const tasksSubscription = supabase
-      .channel('tasks-changes')
+      .channel('tasks')
       .on('postgres_changes', { 
         event: '*', 
         schema: 'public', 
-        table: 'tasks'
-      }, (payload) => {
-        if (payload.eventType === 'INSERT') {
-          setTasks(current => [...current, payload.new as Task]);
-        } else if (payload.eventType === 'UPDATE') {
-          setTasks(current => 
-            current.map(task => task.id === payload.new.id ? payload.new as Task : task)
-          );
-        } else if (payload.eventType === 'DELETE') {
-          setTasks(current => current.filter(task => task.id !== payload.old.id));
-        }
+        table: 'tasks',
+        filter: `list_id=in.(${lists.map(list => list.id).join(',')})`
+      }, () => {
+        // When tasks change, refetch all tasks to get the complete data
+        fetchTasks();
+      })
+      .subscribe();
+
+    // Add subscriptions for subtasks and task_labels
+    const subtasksSubscription = supabase
+      .channel('subtasks')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'subtasks'
+      }, () => {
+        // When subtasks change, refetch all tasks
+        fetchTasks();
+      })
+      .subscribe();
+
+    const labelsSubscription = supabase
+      .channel('task_labels')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'task_labels'
+      }, () => {
+        // When task labels change, refetch all tasks
+        fetchTasks();
       })
       .subscribe();
 
     return () => {
       supabase.removeChannel(listsSubscription);
       supabase.removeChannel(tasksSubscription);
+      subtasksSubscription.unsubscribe();
+      labelsSubscription.unsubscribe();
     };
   }, [boardId]);
 

@@ -3,6 +3,7 @@ import { Droppable } from '@hello-pangea/dnd';
 import Task from './Task';
 import { List, Task as TaskType } from '../lib/supabase';
 import { useBoardContext } from '../context/BoardContext';
+import { supabase } from '../lib/supabase';
 
 interface TaskListProps {
   list: List;
@@ -16,12 +17,40 @@ const TaskList: React.FC<TaskListProps> = ({ list, tasks }) => {
   const [isEditingList, setIsEditingList] = useState(false);
   const [listName, setListName] = useState(list.name);
 
-  const handleAddTask = async () => {
-    if (newTaskTitle.trim()) {
-      await createTask(list.id, newTaskTitle.trim());
-      setNewTaskTitle('');
-      setIsAddingTask(false);
+  const handleAddTask = async (listId: string, title: string) => {
+    const { data, error } = await supabase
+      .from('tasks')
+      .insert([{ list_id: listId, title }])
+      .select(`
+        *,
+        subtasks:subtasks(*),
+        labels:task_labels(
+          label:label_id(*)
+        )
+      `)
+      .single();
+    
+    if (error) {
+      console.error('Error adding task:', error);
+      return;
     }
+    
+    // Transform the new task to match our enhanced format
+    const enhancedTask = {
+      ...data,
+      subtasks: data.subtasks || [],
+      labels: (data.labels || []).map(item => ({
+        id: item.label.id,
+        name: item.label.name,
+        color: item.label.color
+      })),
+      subtaskProgress: {
+        completed: 0,
+        total: 0
+      }
+    };
+    
+    setTasks(prev => [...prev, enhancedTask]);
   };
 
   const handleUpdateList = async () => {
@@ -114,7 +143,7 @@ const TaskList: React.FC<TaskListProps> = ({ list, tasks }) => {
               Cancel
             </button>
             <button
-              onClick={handleAddTask}
+              onClick={() => handleAddTask(list.id, newTaskTitle.trim())}
               className="px-2 py-1 text-sm bg-primary-500 text-white rounded hover:bg-primary-600"
             >
               Add

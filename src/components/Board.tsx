@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { DragDropContext, DropResult } from '@hello-pangea/dnd'
 import { supabase, Database } from '../lib/supabase'
 import List from './List'
 import BoardMembers from './BoardMembers'
 import Logo from './Logo'
+import TaskFilters, { FilterCriteria } from './TaskFilters'
 
 interface BoardMember {
   id: string;
@@ -34,6 +35,14 @@ export default function Board({ userId }: BoardProps) {
   const [isCreatingBoard, setIsCreatingBoard] = useState(false)
   const [boardMembers, setBoardMembers] = useState<BoardMember[]>([])
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [filters, setFilters] = useState<FilterCriteria>({
+    searchText: '',
+    priority: [],
+    assignedTo: [],
+    hasDueDate: null,
+    isOverdue: null,
+    hasSubtasks: null
+  })
 
   useEffect(() => {
     fetchBoards()
@@ -122,20 +131,59 @@ export default function Board({ userId }: BoardProps) {
   }
 
   const fetchTasks = async () => {
-    if (lists.length === 0) return
-
-    const { data, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .in('list_id', lists.map(list => list.id))
-      .order('created_at')
+    if (!lists.length) return;
     
-    if (error) {
-      console.error('Error fetching tasks:', error)
-      return
+    try {
+      const listIds = lists.map(list => list.id);
+      
+      const { data, error } = await supabase
+        .from('tasks')
+        .select(`
+          *,
+          subtasks:subtasks(*),
+          task_labels:task_labels(
+            label_id,
+            labels:label_id(*)
+          )
+        `)
+        .in('list_id', listIds)
+        .order('created_at');
+      
+      if (error) {
+        console.error('Error fetching tasks:', error);
+        return;
+      }
+      
+      // Transform the data to match our task structure with subtasks and labels
+      const transformedTasks = data.map(task => {
+        // Process subtasks
+        const subtasks = task.subtasks || [];
+        const completedSubtasks = subtasks.filter(st => st.is_completed).length;
+        const subtaskProgress = {
+          completed: completedSubtasks,
+          total: subtasks.length
+        };
+        
+        // Process labels
+        const labelRelations = task.task_labels || [];
+        const labels = labelRelations.map(relation => ({
+          id: relation.labels.id,
+          name: relation.labels.name,
+          color: relation.labels.color
+        }));
+        
+        return {
+          ...task,
+          subtasks,
+          subtaskProgress,
+          labels
+        };
+      });
+      
+      setTasks(transformedTasks);
+    } catch (error) {
+      console.error('Error fetching tasks:', error);
     }
-    
-    setTasks(data || [])
   }
 
   const fetchBoardMembers = async () => {
@@ -218,7 +266,7 @@ export default function Board({ userId }: BoardProps) {
   }
 
   const setupRealtimeSubscription = () => {
-    if (!currentBoard) return
+    if (!currentBoard) return;
 
     const listsSubscription = supabase
       .channel('lists')
@@ -228,8 +276,9 @@ export default function Board({ userId }: BoardProps) {
         table: 'lists',
         filter: `board_id=eq.${currentBoard.id}`
       }, fetchLists)
-      .subscribe()
+      .subscribe();
 
+    // For tasks, we need to handle the event more carefully to preserve detailed data
     const tasksSubscription = supabase
       .channel('tasks')
       .on('postgres_changes', { 
@@ -237,21 +286,186 @@ export default function Board({ userId }: BoardProps) {
         schema: 'public', 
         table: 'tasks',
         filter: `list_id=in.(${lists.map(list => list.id).join(',')})`
-      }, fetchTasks)
-      .subscribe()
+      }, (payload) => {
+        // Instead of calling fetchTasks which would reload everything,
+        // we'll handle the state update more granularly
+        if (payload.eventType === 'INSERT') {
+          // For inserts, we'll need to fetch the complete task with relationships
+          fetchSingleTaskWithDetails(payload.new.id);
+        } else if (payload.eventType === 'UPDATE') {
+          // For updates, merge the new data with existing task data
+          updateTaskInState(payload.new);
+        } else if (payload.eventType === 'DELETE') {
+          // For deletes, remove from state
+          setTasks(prev => prev.filter(t => t.id !== payload.old.id));
+        }
+      })
+      .subscribe();
+
+    // Add subscriptions for subtasks and task_labels
+    const subtasksSubscription = supabase
+      .channel('subtasks')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'subtasks'
+      }, (payload) => {
+        handleSubtaskChange(payload);
+      })
+      .subscribe();
+
+    const labelsSubscription = supabase
+      .channel('task_labels')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'task_labels'
+      }, (payload) => {
+        handleTaskLabelChange(payload);
+      })
+      .subscribe();
 
     return () => {
-      listsSubscription.unsubscribe()
-      tasksSubscription.unsubscribe()
-    }
-  }
+      listsSubscription.unsubscribe();
+      tasksSubscription.unsubscribe();
+      subtasksSubscription.unsubscribe();
+      labelsSubscription.unsubscribe();
+    };
+  };
 
-  useEffect(() => {
-    const cleanup = setupRealtimeSubscription()
-    return () => {
-      if (cleanup) cleanup()
+  // Fetch a single task with all its relationships
+  const fetchSingleTaskWithDetails = async (taskId) => {
+    try {
+      const { data, error } = await supabase
+        .from('tasks')
+        .select(`
+          *,
+          subtasks:subtasks(*),
+          task_labels:task_labels(
+            label_id,
+            labels:label_id(*)
+          )
+        `)
+        .eq('id', taskId)
+        .single();
+      
+      if (error) throw error;
+      
+      // Process the data as in fetchTasks
+      const subtasks = data.subtasks || [];
+      const completedSubtasks = subtasks.filter(st => st.is_completed).length;
+      const subtaskProgress = {
+        completed: completedSubtasks,
+        total: subtasks.length
+      };
+      
+      const labelRelations = data.task_labels || [];
+      const labels = labelRelations.map(relation => ({
+        id: relation.labels.id,
+        name: relation.labels.name,
+        color: relation.labels.color
+      }));
+      
+      const taskWithDetails = {
+        ...data,
+        subtasks,
+        subtaskProgress,
+        labels
+      };
+      
+      // Add to state
+      setTasks(prev => [...prev, taskWithDetails]);
+    } catch (error) {
+      console.error('Error fetching task details:', error);
     }
-  }, [currentBoard?.id, lists])
+  };
+
+  // Update a task in state while preserving relationship data
+  const updateTaskInState = (updatedTask) => {
+    setTasks(prev => prev.map(task => {
+      if (task.id === updatedTask.id) {
+        // Preserve the relationships data
+        return {
+          ...task,
+          ...updatedTask,
+          subtasks: task.subtasks,
+          subtaskProgress: task.subtaskProgress,
+          labels: task.labels
+        };
+      }
+      return task;
+    }));
+  };
+
+  // Handle subtask changes in real-time
+  const handleSubtaskChange = (payload) => {
+    setTasks(prev => prev.map(task => {
+      if (task.id === payload.new?.task_id || task.id === payload.old?.task_id) {
+        let updatedSubtasks = [...(task.subtasks || [])];
+        
+        if (payload.eventType === 'INSERT') {
+          updatedSubtasks.push(payload.new);
+        } else if (payload.eventType === 'UPDATE') {
+          updatedSubtasks = updatedSubtasks.map(st => 
+            st.id === payload.new.id ? payload.new : st
+          );
+        } else if (payload.eventType === 'DELETE') {
+          updatedSubtasks = updatedSubtasks.filter(st => st.id !== payload.old.id);
+        }
+        
+        const completedSubtasks = updatedSubtasks.filter(st => st.is_completed).length;
+        const subtaskProgress = {
+          completed: completedSubtasks,
+          total: updatedSubtasks.length
+        };
+        
+        return {
+          ...task,
+          subtasks: updatedSubtasks,
+          subtaskProgress
+        };
+      }
+      return task;
+    }));
+  };
+
+  // Handle task label changes in real-time
+  const handleTaskLabelChange = async (payload) => {
+    // For task labels, we need to fetch the complete label data
+    if (payload.eventType === 'INSERT') {
+      try {
+        const { data, error } = await supabase
+          .from('labels')
+          .select('*')
+          .eq('id', payload.new.label_id)
+          .single();
+        
+        if (error) throw error;
+        
+        setTasks(prev => prev.map(task => {
+          if (task.id === payload.new.task_id) {
+            return {
+              ...task,
+              labels: [...(task.labels || []), data]
+            };
+          }
+          return task;
+        }));
+      } catch (error) {
+        console.error('Error fetching label details:', error);
+      }
+    } else if (payload.eventType === 'DELETE') {
+      setTasks(prev => prev.map(task => {
+        if (task.id === payload.old.task_id) {
+          return {
+            ...task,
+            labels: (task.labels || []).filter(label => label.id !== payload.old.label_id)
+          };
+        }
+        return task;
+      }));
+    }
+  };
 
   const handleCreateBoard = async (e?: React.FormEvent) => {
     if (e) e.preventDefault()
@@ -337,58 +551,74 @@ export default function Board({ userId }: BoardProps) {
     setTasks(prev => prev.filter(task => task.id !== taskId))
   }
 
-  const handleUpdateTask = async (taskId: string, title: string, description?: string, due_date?: string, assigned_to?: string) => {
+  const handleUpdateTask = async (
+    taskId: string, 
+    title: string, 
+    description?: string, 
+    due_date?: string, 
+    assigned_to?: string,
+    priority?: string
+  ) => {
     try {
-      const updateData: any = { title }
+      const updateData: any = { title };
       
       if (description !== undefined) {
-        updateData.description = description
+        updateData.description = description;
       }
       
       if (due_date !== undefined) {
-        updateData.due_date = due_date
+        updateData.due_date = due_date;
       }
       
       if (assigned_to !== undefined) {
-        updateData.assigned_to = assigned_to
+        updateData.assigned_to = assigned_to;
       }
+      
+      if (priority !== undefined) {
+        updateData.priority = priority;
+      }
+      
+      console.log('Updating task with data:', updateData); // Debug log
       
       const { error } = await supabase
         .from('tasks')
         .update(updateData)
-        .eq('id', taskId)
+        .eq('id', taskId);
 
-      if (error) throw error
+      if (error) throw error;
 
+      // Update the task in state, including priority
       setTasks(prev => prev.map(task => task.id === taskId ? {
         ...task,
         title,
         description: description !== undefined ? description : task.description,
         due_date: due_date !== undefined ? due_date : task.due_date,
-        assigned_to: assigned_to !== undefined ? assigned_to : task.assigned_to
-      } : task))
+        assigned_to: assigned_to !== undefined ? assigned_to : task.assigned_to,
+        priority: priority !== undefined ? priority : task.priority
+      } : task));
     } catch (error) {
-      console.error('Error updating task:', error)
+      console.error('Error updating task:', error);
     }
-  }
+  };
 
   const handleMoveTask = async (taskId: string, sourceListId: string, destinationListId: string) => {
     const { error } = await supabase
       .from('tasks')
       .update({ list_id: destinationListId })
-      .eq('id', taskId)
+      .eq('id', taskId);
     
     if (error) {
-      console.error('Error moving task:', error)
-      return
+      console.error('Error moving task:', error);
+      return;
     }
 
+    // Preserve all task details when moving between lists
     setTasks(prev => prev.map(task => 
       task.id === taskId 
         ? { ...task, list_id: destinationListId }
         : task
-    ))
-  }
+    ));
+  };
 
   const handleDragEnd = async (result: DropResult) => {
     if (!result.destination) return
@@ -414,6 +644,83 @@ export default function Board({ userId }: BoardProps) {
   const handleDeleteList = (listId: string) => {
     // Add this functionality if needed
   }
+
+  // 1. First define the hasActiveFilters function before using it
+  const hasActiveFilters = () => {
+    return filters.searchText !== '' || 
+      filters.priority.length > 0 || 
+      filters.assignedTo.length > 0 || 
+      filters.hasDueDate !== null || 
+      filters.isOverdue !== null ||
+      filters.hasSubtasks !== null;
+  };
+
+  // 2. Helper function to check if a task is overdue
+  const isOverdue = (dateString: string): boolean => {
+    if (!dateString) return false;
+    const dueDate = new Date(dateString);
+    const now = new Date();
+    return dueDate < now;
+  };
+
+  // 3. Define the taskMatchesFilters function
+  const taskMatchesFilters = (task) => {
+    // Search text
+    if (filters.searchText && !(
+      task.title.toLowerCase().includes(filters.searchText.toLowerCase()) ||
+      (task.description && task.description.toLowerCase().includes(filters.searchText.toLowerCase()))
+    )) {
+      return false;
+    }
+    
+    // Priority
+    if (filters.priority.length > 0 && !filters.priority.includes(task.priority || 'medium')) {
+      return false;
+    }
+    
+    // Assignee
+    if (filters.assignedTo.length > 0) {
+      const isUnassigned = !task.assigned_to;
+      const isSelectedUnassigned = filters.assignedTo.includes('');
+      const isAssignedToSelected = task.assigned_to && filters.assignedTo.includes(task.assigned_to);
+      
+      if (!(isUnassigned && isSelectedUnassigned) && !isAssignedToSelected) {
+        return false;
+      }
+    }
+    
+    // Due date
+    if (filters.hasDueDate === true && !task.due_date) {
+      return false;
+    }
+    if (filters.hasDueDate === false && task.due_date) {
+      return false;
+    }
+    
+    // Overdue
+    if (filters.isOverdue === true && (!task.due_date || !isOverdue(task.due_date))) {
+      return false;
+    }
+    
+    // Subtasks
+    if (filters.hasSubtasks === true && (!task.subtasks || task.subtasks.length === 0)) {
+      return false;
+    }
+    if (filters.hasSubtasks === false && task.subtasks && task.subtasks.length > 0) {
+      return false;
+    }
+    
+    return true;
+  };
+
+  // 4. Now define filteredTasks using the functions above
+  const filteredTasks = useMemo(() => {
+    if (!hasActiveFilters()) {
+      return tasks;
+    }
+    
+    return tasks.filter(taskMatchesFilters);
+  }, [tasks, filters]);
 
   if (loading) {
     return (
@@ -582,50 +889,78 @@ export default function Board({ userId }: BoardProps) {
 
         {/* Main board content with lists and tasks */}
         {currentBoard ? (
-    <DragDropContext onDragEnd={handleDragEnd}>
-            <div className="flex-1 overflow-x-auto p-6">
-              <div className="flex gap-6 items-start">
-        {lists.map((list) => (
-                  <List
-            key={list.id}
-            list={list}
-            tasks={tasks.filter((task) => task.list_id === list.id)}
-                    onAddTask={handleAddTask}
-                    onDeleteTask={handleDeleteTask}
-                    onUpdateTask={handleUpdateTask}
-                    onUpdateListTitle={handleUpdateListTitle}
-                    onDeleteList={handleDeleteList}
-                    onMoveTask={handleMoveTask}
-                    boardMembers={boardMembers}
-          />
-        ))}
-
-                <div className="w-72 shrink-0 bg-[#161b22] rounded-lg border border-[#30363d] shadow-md overflow-hidden">
-                  <form onSubmit={(e) => {
-                    e.preventDefault()
-                    if (newListName.trim()) {
-                      handleAddList(newListName.trim())
-                    }
-                  }} className="p-2">
-              <input
-                type="text"
-                      placeholder="Add a new list"
-                value={newListName}
-                onChange={(e) => setNewListName(e.target.value)}
-                      className="w-full p-2 bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner"
-              />
-                <button
-                      type="submit"
-                      disabled={!newListName.trim()}
-                      className="mt-2 w-full p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          <div className="p-4">
+            <TaskFilters 
+              boardMembers={boardMembers}
+              onFilterChange={setFilters}
+            />
+            
+            {hasActiveFilters() && (
+              <div className="bg-blue-900/20 text-blue-400 p-3 rounded-md mb-4 flex justify-between items-center">
+                <span className="text-sm">
+                  Showing {filteredTasks.length} of {tasks.length} tasks based on filters
+                </span>
+                <button 
+                  onClick={() => setFilters({
+                    searchText: '',
+                    priority: [],
+                    assignedTo: [],
+                    hasDueDate: null,
+                    isOverdue: null,
+                    hasSubtasks: null
+                  })}
+                  className="text-xs bg-blue-800/50 hover:bg-blue-700/50 px-2 py-1 rounded"
                 >
-                      Add List
+                  Clear All Filters
                 </button>
-                  </form>
+              </div>
+            )}
+
+            <DragDropContext onDragEnd={handleDragEnd}>
+              <div className="flex-1 overflow-x-auto p-6">
+                <div className="flex gap-6 items-start">
+                  {lists.map((list) => (
+                    <List
+                      key={list.id}
+                      list={list}
+                      tasks={filteredTasks.filter((task) => task.list_id === list.id)}
+                      onAddTask={handleAddTask}
+                      onDeleteTask={handleDeleteTask}
+                      onUpdateTask={handleUpdateTask}
+                      onUpdateListTitle={handleUpdateListTitle}
+                      onDeleteList={handleDeleteList}
+                      onMoveTask={handleMoveTask}
+                      boardMembers={boardMembers}
+                    />
+                  ))}
+
+                  <div className="w-72 shrink-0 bg-[#161b22] rounded-lg border border-[#30363d] shadow-md overflow-hidden">
+                    <form onSubmit={(e) => {
+                      e.preventDefault()
+                      if (newListName.trim()) {
+                        handleAddList(newListName.trim())
+                      }
+                    }} className="p-2">
+                      <input
+                        type="text"
+                        placeholder="Add a new list"
+                        value={newListName}
+                        onChange={(e) => setNewListName(e.target.value)}
+                        className="w-full p-2 bg-[#0d1117] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!newListName.trim()}
+                        className="mt-2 w-full p-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Add List
+                      </button>
+                    </form>
+                  </div>
                 </div>
               </div>
-            </div>
-          </DragDropContext>
+            </DragDropContext>
+          </div>
         ) : (
           <div className="flex-1 flex items-center justify-center p-4">
             <div className="bg-[#161b22] p-8 rounded-lg shadow-2xl max-w-md w-full border border-[#30363d] relative overflow-hidden">

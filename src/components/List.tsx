@@ -1,7 +1,8 @@
 import { Droppable, Draggable } from '@hello-pangea/dnd'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { Database } from '../lib/supabase'
 import Task from './Task'
+import { FaFlag } from 'react-icons/fa'
 
 interface BoardMember {
   id: string;
@@ -21,7 +22,7 @@ type ListProps = {
   tasks: TaskRow[]
   onAddTask: (listId: string, title: string) => Promise<void>
   onDeleteTask: (taskId: string) => Promise<void>
-  onUpdateTask: (taskId: string, title: string, description?: string, due_date?: string, assigned_to?: string) => Promise<void>
+  onUpdateTask: (taskId: string, title: string, description?: string, due_date?: string, assigned_to?: string, priority?: string) => Promise<void>
   onUpdateListTitle: (listId: string, title: string) => void
   onDeleteList: (listId: string) => void
   onMoveTask: (taskId: string, sourceListId: string, destinationListId: string) => Promise<void>
@@ -41,6 +42,7 @@ export default function List({
 }: ListProps) {
   const [isAddingTask, setIsAddingTask] = useState(false)
   const [newTaskTitle, setNewTaskTitle] = useState('')
+  const [sortByPriority, setSortByPriority] = useState(false)
 
   const handleAddTask = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -51,6 +53,19 @@ export default function List({
     }
   }
 
+  const sortedTasks = useMemo(() => {
+    if (!sortByPriority) return tasks;
+    
+    // Priority order: urgent > high > medium > low
+    const priorityOrder = { urgent: 0, high: 1, medium: 2, low: 3 };
+    
+    return [...tasks].sort((a, b) => {
+      const priorityA = priorityOrder[a.priority || 'medium'];
+      const priorityB = priorityOrder[b.priority || 'medium'];
+      return priorityA - priorityB;
+    });
+  }, [tasks, sortByPriority]);
+
   return (
     <div className="bg-[#21262d] rounded-lg w-72 flex-shrink-0 flex flex-col max-h-full border border-[#30363d] shadow-xl relative">
       {/* List header with options */}
@@ -58,6 +73,15 @@ export default function List({
         <h2 className="text-sm font-semibold px-2 py-1 text-gray-200 truncate flex-1">{list.name}</h2>
         <div className="flex items-center">
           <span className="text-xs text-gray-400 mr-2">{tasks.length}</span>
+          <button 
+            onClick={() => setSortByPriority(!sortByPriority)}
+            className={`w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-200 rounded-md hover:bg-[#30363d] transition-colors ${
+              sortByPriority ? 'text-yellow-400' : ''
+            }`}
+            title={sortByPriority ? "Sort by created time" : "Sort by priority"}
+          >
+            <FaFlag size={14} />
+          </button>
           <button className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-200 rounded-md hover:bg-[#30363d] transition-colors">
             •••
           </button>
@@ -79,7 +103,7 @@ export default function List({
               scrollbarColor: '#30363d transparent' 
             }}
           >
-            {tasks.map((task, index) => (
+            {sortedTasks.map((task, index) => (
               <Draggable key={task.id} draggableId={task.id} index={index}>
                 {(provided, snapshot) => (
                   <div
@@ -89,9 +113,13 @@ export default function List({
                     className={`${snapshot.isDragging ? 'rotate-2 opacity-90 scale-105 z-10' : ''} transition-transform`}
                   >
                     <Task
+                      key={task.id}
                       task={task}
                       onDelete={onDeleteTask}
-                      onUpdate={onUpdateTask}
+                      onUpdate={(taskId, title, desc, dueDate, assignedTo, priority) => {
+                        console.log('List passing priority to onUpdateTask:', priority); // Debug log
+                        onUpdateTask(taskId, title, desc, dueDate, assignedTo, priority);
+                      }}
                       boardMembers={boardMembers}
                     />
                   </div>

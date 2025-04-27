@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Database } from '../lib/supabase'
 import { supabase } from '../lib/supabase'
+import { FaFlag } from 'react-icons/fa'
 
 // Type for comments
 interface Comment {
@@ -29,6 +30,13 @@ interface Subtask {
   position: number;
 }
 
+// Type for labels
+interface Label {
+  id: string;
+  name: string;
+  color: string;
+}
+
 // Enhanced type for Task with additional properties
 type EnhancedTask = Database['public']['Tables']['tasks']['Row'] & {
   description?: string | null;
@@ -37,6 +45,9 @@ type EnhancedTask = Database['public']['Tables']['tasks']['Row'] & {
   assignee_email?: string;
   comments?: Comment[];
   subtasks?: Subtask[];
+  subtaskProgress?: { completed: number; total: number };
+  labels?: Label[];
+  priority?: string;
 };
 
 type TaskProps = {
@@ -48,9 +59,34 @@ type TaskProps = {
     title: string, 
     description?: string, 
     due_date?: string, 
-    assigned_to?: string
+    assigned_to?: string,
+    priority?: string
   ) => Promise<void>;
 }
+
+// Add priority configuration
+const PRIORITY_CONFIG = {
+  urgent: { 
+    color: '#ef4444', // Red
+    label: 'Urgent',
+    icon: '🔴'
+  },
+  high: { 
+    color: '#f97316', // Orange
+    label: 'High',
+    icon: '🟠'
+  },
+  medium: { 
+    color: '#facc15', // Yellow
+    label: 'Medium',
+    icon: '🟡'
+  },
+  low: { 
+    color: '#a3e635', // Light green
+    label: 'Low',
+    icon: '🟢'
+  }
+};
 
 export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskProps) {
   const [isEditing, setIsEditing] = useState(false)
@@ -64,9 +100,15 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
   const [comments, setComments] = useState<Comment[]>(task.comments || [])
   const [newComment, setNewComment] = useState('')
   const [loading, setLoading] = useState(false)
-  const [subtasks, setSubtasks] = useState<Subtask[]>([])
+  const [subtasks, setSubtasks] = useState<Subtask[]>(task.subtasks || [])
   const [newSubtaskTitle, setNewSubtaskTitle] = useState('')
-  const [subtaskProgress, setSubtaskProgress] = useState({ completed: 0, total: 0 })
+  const [subtaskProgress, setSubtaskProgress] = useState(task.subtaskProgress || { completed: 0, total: 0 })
+  const [labels, setLabels] = useState<Label[]>(task.labels || [])
+  const [boardLabels, setBoardLabels] = useState<Label[]>([])
+  const [isAddingLabel, setIsAddingLabel] = useState(false)
+  const [newLabelName, setNewLabelName] = useState('')
+  const [newLabelColor, setNewLabelColor] = useState('#0284c7')
+  const [priority, setPriority] = useState(task.priority || 'medium')
   
   const modalRef = useRef<HTMLDivElement>(null)
   const titleInputRef = useRef<HTMLTextAreaElement>(null)
@@ -109,6 +151,7 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
     if (isModalOpen) {
       fetchComments();
       fetchSubtasks();
+      fetchTaskLabels();
     }
   }, [isModalOpen]);
 
@@ -160,22 +203,44 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
   const fetchComments = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
+      
+      // First get the comments
+      const { data: commentsData, error: commentsError } = await supabase
         .from('comments')
-        .select(`
-          *,
-          profiles:user_id (email)
-        `)
+        .select('*')
         .eq('task_id', task.id)
         .order('created_at', { ascending: false });
       
-      if (error) throw error;
+      if (commentsError) throw commentsError;
       
-      // Transform the data to match our Comment interface
-      const formattedComments = data?.map(comment => ({
+      if (!commentsData || commentsData.length === 0) {
+        setComments([]);
+        return;
+      }
+      
+      // Then get the user profiles in a separate query
+      const userIds = commentsData.map(comment => comment.user_id);
+      
+      const { data: profilesData, error: profilesError } = await supabase
+        .from('profiles')
+        .select('id, email')
+        .in('id', userIds);
+      
+      if (profilesError) throw profilesError;
+      
+      // Create a map for quick lookup
+      const profileMap = new Map();
+      if (profilesData) {
+        profilesData.forEach(profile => {
+          profileMap.set(profile.id, profile.email);
+        });
+      }
+      
+      // Add email to each comment
+      const formattedComments = commentsData.map(comment => ({
         ...comment,
-        user_email: comment.profiles?.email
-      })) || [];
+        user_email: profileMap.get(comment.user_id) || 'Unknown User'
+      }));
       
       setComments(formattedComments);
     } catch (error) {
@@ -186,6 +251,13 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
   };
 
   const fetchSubtasks = async () => {
+    if (task.subtasks && task.subtasks.length > 0) {
+      // Data is already loaded, just update state if needed
+      setSubtasks(task.subtasks);
+      return;
+    }
+    
+    // Original fetch code for when data is not pre-loaded
     try {
       const { data, error } = await supabase
         .from('subtasks')
@@ -210,8 +282,54 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
     }
   };
 
+  const fetchTaskLabels = async () => {
+    if (task.labels && task.labels.length > 0) {
+      // Labels are already loaded
+      setLabels(task.labels);
+      
+      // Still need to fetch board labels
+      try {
+        // Get the board_id
+        const { data: taskData, error: taskError } = await supabase
+          .from('tasks')
+          .select(`
+            list_id,
+            lists:list_id (
+              board_id
+            )
+          `)
+          .eq('id', task.id)
+          .single();
+        
+        if (taskError) throw taskError;
+        
+        const boardId = taskData.lists.board_id;
+        
+        // Get all labels for this board
+        const { data: allLabels, error: labelsError } = await supabase
+          .from('labels')
+          .select('*')
+          .eq('board_id', boardId)
+          .order('name');
+        
+        if (labelsError) throw labelsError;
+        
+        setBoardLabels(allLabels || []);
+      } catch (error) {
+        console.error('Error fetching board labels:', error);
+      }
+      
+      return;
+    }
+    
+    // Original fetch code goes here
+    // ...
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+    e.preventDefault();
+    console.log('Submitting with priority:', priority); // Debug log
+    
     const trimmedTitle = title.trim();
     const trimmedDescription = description.trim();
     const combinedDueDate = combineDateAndTime();
@@ -220,18 +338,20 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
       trimmedTitle !== task.title || 
       trimmedDescription !== (task.description || '') || 
       combinedDueDate !== task.due_date || 
-      assignedTo !== (task.assigned_to || '')
+      assignedTo !== (task.assigned_to || '') ||
+      priority !== (task.priority || 'medium') // Check if priority changed
     )) {
       await onUpdate(
         task.id, 
         trimmedTitle, 
         trimmedDescription || undefined, 
         combinedDueDate, 
-        assignedTo || undefined
-      )
+        assignedTo || undefined,
+        priority // Include priority here
+      );
     }
-    setIsEditing(false)
-  }
+    setIsEditing(false);
+  };
 
   const addComment = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -415,77 +535,106 @@ export default function Task({ task, boardMembers, onDelete, onUpdate }: TaskPro
       console.error('Error deleting subtask:', error);
     }
   };
-  
-//color-coded label
-  function Task({ title, labels }) {
-  return (
-    <div className="task">
-      <h3>{title}</h3>
-      <div className="labels">
-        {labels.map((label, index) => (
-          <span key={index} style={{ backgroundColor: label.color }} className="label">
-            {label.text}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
 
-//priority levels
-
-function Task({ title, labels, priority }) {
-  // Helper to get color based on priority
-  const getPriorityColor = (priority) => {
-    switch (priority) {
-      case 'High':
-        return 'red';
-      case 'Medium':
-        return 'orange';
-      case 'Low':
-        return 'green';
-      default:
-        return 'gray';
+  // Add handler to create a new label
+  const createLabel = async () => {
+    if (!newLabelName.trim()) return;
+    
+    try {
+      // Get the board_id
+      const { data: taskData, error: taskError } = await supabase
+        .from('tasks')
+        .select(`
+          list_id,
+          lists:list_id (
+            board_id
+          )
+        `)
+        .eq('id', task.id)
+        .single();
+      
+      if (taskError) throw taskError;
+      
+      const boardId = taskData.lists.board_id;
+      
+      // Create the label
+      const { data: labelData, error: labelError } = await supabase
+        .from('labels')
+        .insert([{
+          board_id: boardId,
+          name: newLabelName.trim(),
+          color: newLabelColor
+        }])
+        .select()
+        .single();
+      
+      if (labelError) throw labelError;
+      
+      // Add the new label to the board labels list
+      setBoardLabels(prev => [...prev, labelData]);
+      
+      // Clear the form
+      setNewLabelName('');
+      setIsAddingLabel(false);
+    } catch (error) {
+      console.error('Error creating label:', error);
     }
   };
 
-  return (
-    <div className="task">
-      <h3>{title}</h3>
+  // Add handler to toggle a label on a task
+  const toggleTaskLabel = async (labelId: string) => {
+    try {
+      const isLabelApplied = labels.some(label => label.id === labelId);
+      
+      if (isLabelApplied) {
+        // Remove the label
+        const { error } = await supabase
+          .from('task_labels')
+          .delete()
+          .eq('task_id', task.id)
+          .eq('label_id', labelId);
+        
+        if (error) throw error;
+        
+        // Update local state
+        setLabels(prev => prev.filter(label => label.id !== labelId));
+      } else {
+        // Add the label
+        const { error } = await supabase
+          .from('task_labels')
+          .insert([{
+            task_id: task.id,
+            label_id: labelId
+          }]);
+        
+        if (error) throw error;
+        
+        // Find the label in boardLabels and add it to labels
+        const labelToAdd = boardLabels.find(label => label.id === labelId);
+        if (labelToAdd) {
+          setLabels(prev => [...prev, labelToAdd]);
+        }
+      }
+    } catch (error) {
+      console.error('Error toggling label:', error);
+    }
+  };
 
-      {/* Priority Badge */}
-      <div
-        className="priority"
-        style={{
-          backgroundColor: getPriorityColor(priority),
-          color: 'white',
-          padding: '4px 8px',
-          borderRadius: '4px',
-          display: 'inline-block',
-          marginBottom: '8px',
-        }}
-      >
-        {priority} Priority
-      </div>
+  // Add these color options
+  const colorOptions = [
+    { name: 'Blue', value: '#0284c7' },
+    { name: 'Green', value: '#16a34a' },
+    { name: 'Red', value: '#dc2626' },
+    { name: 'Yellow', value: '#ca8a04' },
+    { name: 'Purple', value: '#9333ea' },
+    { name: 'Pink', value: '#db2777' },
+    { name: 'Orange', value: '#ea580c' },
+    { name: 'Gray', value: '#6b7280' }
+  ];
 
-      {/* Labels */}
-      <div className="labels">
-        {labels.map((label, index) => (
-          <span
-            key={index}
-            style={{ backgroundColor: label.color }}
-            className="label"
-          >
-            {label.text}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-export default Task;
-
+  // Add console logs to debug
+  console.log('Current task priority:', task.priority);
+  console.log('Current priority state:', priority);
 
   // Task card component
   return (
@@ -496,6 +645,14 @@ export default Task;
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
+        {/* Add this for priority indicator */}
+        {priority && priority !== 'medium' && (
+          <div 
+            className="absolute top-0 left-0 bottom-0 w-1 rounded-tl-md rounded-bl-md"
+            style={{ backgroundColor: PRIORITY_CONFIG[priority].color }}
+          ></div>
+        )}
+        
         {/* Task created indicator */}
         <div className="absolute top-0 left-0 w-1 h-1 rounded-full bg-blue-500/50 m-1"></div>
         
@@ -531,6 +688,24 @@ export default Task;
             <div className="text-gray-400 flex items-center">
               <span className="mr-1">✓</span>
               <span>{subtaskProgress.completed}/{subtaskProgress.total}</span>
+            </div>
+          )}
+          {labels && labels.length > 0 && (
+            <div className="flex items-center gap-1 mt-1 flex-wrap">
+              {labels.map(label => (
+                <span 
+                  key={label.id}
+                  className="px-2 py-0.5 text-xs rounded-full text-white"
+                  style={{ backgroundColor: label.color }}
+                >
+                  {label.name}
+                </span>
+              ))}
+            </div>
+          )}
+          {priority && priority !== 'medium' && (
+            <div className="text-gray-400 flex items-center" title={`Priority: ${PRIORITY_CONFIG[priority].label}`}>
+              <span className="mr-1">{PRIORITY_CONFIG[priority].icon}</span>
             </div>
           )}
         </div>
@@ -642,6 +817,34 @@ export default Task;
                     </select>
                   </div>
 
+                  <div className="mb-4">
+                    <label className="block text-gray-400 text-sm mb-2">Priority</label>
+                    <div className="flex flex-wrap gap-2">
+                      {Object.entries(PRIORITY_CONFIG).map(([key, value]) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => {
+                            console.log(`Setting priority to: ${key}`);
+                            setPriority(key);
+                          }}
+                          className={`px-3 py-1.5 rounded text-xs flex items-center transition-all ${
+                            priority === key 
+                              ? 'ring-1 ring-white bg-opacity-30'
+                              : 'bg-opacity-10 hover:bg-opacity-20'
+                          }`}
+                          style={{ 
+                            backgroundColor: value.color, 
+                            color: 'white'
+                          }}
+                        >
+                          <span className="mr-1">{value.icon}</span>
+                          {value.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   <div className="flex justify-end gap-2">
                 <button
                       type="button"
@@ -715,6 +918,21 @@ export default Task;
                         Not assigned
                       </p>
                     )}
+                  </div>
+
+                  <div className="mb-4">
+                    <h4 className="text-gray-400 text-sm mb-2">Priority</h4>
+                    <div 
+                      className="p-2 rounded-md flex items-center"
+                      style={{ 
+                        backgroundColor: PRIORITY_CONFIG[priority || 'medium'].color + '30',
+                        color: 'white',
+                        textShadow: '0 1px 2px rgba(0,0,0,0.3)'
+                      }}
+                    >
+                      <span className="mr-2 text-lg">{PRIORITY_CONFIG[priority || 'medium'].icon}</span>
+                      <span className="font-medium">{PRIORITY_CONFIG[priority || 'medium'].label}</span>
+                    </div>
                   </div>
 
                   {/* Comments section */}
@@ -835,6 +1053,89 @@ export default Task;
                         Add
                       </button>
                     </div>
+                  </div>
+
+                  {/* Labels section */}
+                  <div className="mb-4">
+                    <h4 className="text-gray-400 text-sm mb-2 flex justify-between items-center">
+                      <span>Labels</span>
+                      <button 
+                        onClick={() => setIsAddingLabel(!isAddingLabel)}
+                        className="text-xs text-blue-400 hover:text-blue-300"
+                      >
+                        {isAddingLabel ? 'Cancel' : 'Add label'}
+                      </button>
+                    </h4>
+                    
+                    {isAddingLabel ? (
+                      <div className="p-3 bg-[#0d1117] rounded-md border border-[#30363d]">
+                        <input
+                          type="text"
+                          value={newLabelName}
+                          onChange={(e) => setNewLabelName(e.target.value)}
+                          placeholder="Label name"
+                          className="w-full p-2 mb-3 text-sm bg-[#161b22] text-gray-200 rounded-md border border-[#30363d] focus:border-blue-500 outline-none shadow-inner"
+                        />
+                        
+                        <div className="mb-3">
+                          <label className="block text-xs text-gray-400 mb-2">Color</label>
+                          <div className="flex flex-wrap gap-2">
+                            {colorOptions.map(color => (
+                              <button
+                                key={color.value}
+                                type="button"
+                                onClick={() => setNewLabelColor(color.value)}
+                                className={`w-6 h-6 rounded-full ${newLabelColor === color.value ? 'ring-2 ring-white' : ''}`}
+                                style={{ backgroundColor: color.value }}
+                                title={color.name}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                        
+                        <div className="flex justify-end">
+                          <button
+                            onClick={createLabel}
+                            disabled={!newLabelName.trim()}
+                            className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            Create Label
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-3 bg-[#0d1117] rounded-md border border-[#30363d]">
+                        {boardLabels.length === 0 ? (
+                          <p className="text-gray-500 text-sm">No labels available. Create one to get started.</p>
+                        ) : (
+                          <div className="space-y-2">
+                            {boardLabels.map(boardLabel => {
+                              const isApplied = labels.some(label => label.id === boardLabel.id);
+                              return (
+                                <div 
+                                  key={boardLabel.id}
+                                  className="flex items-center"
+                                >
+                                  <button
+                                    onClick={() => toggleTaskLabel(boardLabel.id)}
+                                    className={`flex items-center w-full rounded py-1 px-2 hover:bg-[#1c2129] ${isApplied ? 'bg-[#1c2129]' : ''}`}
+                                  >
+                                    <span
+                                      className="w-3 h-3 rounded-full mr-2"
+                                      style={{ backgroundColor: boardLabel.color }}
+                                    />
+                                    <span className="text-sm text-gray-200">{boardLabel.name}</span>
+                                    {isApplied && (
+                                      <span className="ml-auto text-blue-400">✓</span>
+                                    )}
+                                  </button>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex justify-end gap-2 mt-6">
