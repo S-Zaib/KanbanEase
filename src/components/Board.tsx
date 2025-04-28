@@ -510,15 +510,20 @@ export default function Board({ userId }: BoardProps) {
 
   const handleAddList = async (name: string) => {
     if (!currentBoard) return
-
-    const { error } = await supabase
+  
+    const { data, error } = await supabase
       .from('lists')
       .insert([{ name, board_id: currentBoard.id }])
+      .select()
+      .single()
     
     if (error) {
       console.error('Error adding list:', error)
+    } else if (data) {
+      // Update the lists in state with the new list
+      setLists(prev => [...prev, data])
     }
-
+  
     setNewListName('')
   }
 
